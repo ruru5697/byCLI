@@ -45,3 +45,13 @@ bycli ima knowledge-list --help
 ```
 
 返回字段：`id`, `name`, `type`, `typeName`, `raw`。可使用 `-f json` 保留结构化输出。
+
+## `status`
+
+读取知识库内各项内容的处理与访问状态；与 `knowledge` 使用相同的Chrome登录态。知识库名称或ID须精确匹配。
+
+```bash
+bycli ima status '知识库名称或ID' -f json
+```
+
+返回 `knowledgeBaseId`、`knowledgeBase`、`title`、`mediaId`、`mediaState`、`mediaAuditStatus`、`accessStatus`、`parseProgress`、`parseErrInfo`、`updateTime` 和 `url`。这些是平台原始状态值，不在本地推断成功或失败；字段未提供时为 `null`。空知识库、知识库不存在、登录失效或响应错误会明确报错。
