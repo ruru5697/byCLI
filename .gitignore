@@ -82,3 +82,6 @@ test-assets/toutiao-downloads-final/本体江湖：五大门派的绝技与困�
 test-assets/toutiao-downloads-json-final/本体江湖：五大门派的绝技与困局.json
 test-assets/toutiao-downloads-json-final/本体江湖：五大门派的绝技与困局.md
 /.tmp/
+
+# Account-bound platform acceptance exports stay local.
+/weibo-acceptance-*/
