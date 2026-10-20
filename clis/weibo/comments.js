@@ -1,8 +1,10 @@
 /**
- * Weibo comments — get comments on a post.
+ * Weibo comments — get comments on a post with cursor pagination.
  */
 import { cli, Strategy } from '@sovovs/bycli/registry';
-import { requireArrayEvaluateResult, unwrapEvaluateResult } from './utils.js';
+import { CommandExecutionError } from '@sovovs/bycli/errors';
+import { normalizeWeiboTarget, unwrapEvaluateResult } from './utils.js';
+
 cli({
     site: 'weibo',
     name: 'comments',
@@ -11,43 +13,85 @@ cli({
     domain: 'weibo.com',
     strategy: Strategy.COOKIE,
     args: [
-        { name: 'id', required: true, positional: true, help: 'Post ID (numeric idstr)' },
-        { name: 'limit', type: 'int', default: 20, help: 'Number of comments (max 50)' },
+        { name: 'id', required: true, positional: true, help: 'Post ID, mblogid, or Weibo post URL' },
+        { name: 'limit', type: 'int', default: 20, help: 'Number of comments (max 100)' },
+        { name: 'cursor', type: 'string', help: 'Resume cursor returned by Weibo' },
+        { name: 'sort', type: 'string', default: 'time', choices: ['hot', 'time'], help: 'Comment order' },
+        { name: 'include-replies', type: 'boolean', default: false, help: 'Include structured reply comments' },
     ],
-    columns: ['rank', 'author', 'text', 'likes', 'replies', 'time'],
+    columns: ['rank', 'comment_id', 'author', 'author_uid', 'text', 'likes', 'reply_count', 'replies', 'time', 'next_cursor', 'has_more'],
     func: async (page, kwargs) => {
-        const count = Math.min(kwargs.limit || 20, 50);
+        const count = Math.min(Math.max(Number(kwargs.limit || 20), 1), 100);
+        const target = normalizeWeiboTarget(kwargs.id);
+        const lookup = target.id || target.mblogid;
+        const sort = kwargs.sort === 'hot' ? 'hot' : 'time';
+        const includeReplies = kwargs['include-replies'] === true || kwargs.includeReplies === true;
         await page.goto('https://weibo.com');
         await page.wait(2);
-        const id = String(kwargs.id);
-        const data = requireArrayEvaluateResult(unwrapEvaluateResult(await page.evaluate(`
+
+        const rows = [];
+        const seenComments = new Set();
+        const seenCursors = new Set();
+        let cursor = String(kwargs.cursor || '');
+        let nextCursor = null;
+        let hasMore = false;
+
+        while (rows.length < count) {
+            if (seenCursors.has(cursor)) break;
+            seenCursors.add(cursor);
+            const payload = unwrapEvaluateResult(await page.evaluate(`
       (async () => {
-        const id = ${JSON.stringify(id)};
+        const id = ${JSON.stringify(lookup)};
         const count = ${count};
+        const cursor = ${JSON.stringify(cursor)};
+        const sort = ${JSON.stringify(sort)};
         const strip = (html) => (html || '').replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').trim();
-
-        const url = '/ajax/statuses/buildComments?flow=0&is_reload=1&id=' + id + '&is_show_bulletin=2&is_mix=0&count=' + count;
-        const resp = await fetch(url, {credentials: 'include'});
-        if (!resp.ok) return {error: 'HTTP ' + resp.status};
+        const params = new URLSearchParams({ flow: '0', is_reload: '1', id, is_show_bulletin: '2', is_mix: '0', count: String(count), max_id_type: sort === 'hot' ? '1' : '0' });
+        if (cursor) params.set('max_id', cursor);
+        const resp = await fetch('/ajax/statuses/buildComments?' + params.toString(), {credentials: 'include'});
+        if (resp.status === 401 || resp.status === 403) return { auth: true };
+        if (!resp.ok) return { error: 'HTTP ' + resp.status };
         const data = await resp.json();
-        if (!data.ok) return {error: 'API error: ' + (data.msg || 'unknown')};
-
-        return (data.data || []).map((c, i) => {
-          const item = {
-            rank: i + 1,
+        if (!data.ok) return { error: 'API error: ' + (data.msg || 'unknown') };
+        const items = (data.data || []).map((c) => {
+          const replies = (c.reply_comments || c.replies || (c.reply_comment ? [c.reply_comment] : [])).map((reply) => ({
+            id: String(reply.idstr || reply.id || ''),
+            author: reply.user?.screen_name || '',
+            author_uid: String(reply.user?.idstr || reply.user?.id || ''),
+            text: strip(reply.text || ''),
+            time: reply.created_at || '',
+          }));
+          return {
+            comment_id: String(c.idstr || c.id || ''),
             author: c.user?.screen_name || '',
+            author_uid: String(c.user?.idstr || c.user?.id || ''),
             text: strip(c.text || ''),
-            likes: c.like_count || 0,
-            replies: c.total_number || 0,
+            likes: Number(c.like_count ?? 0),
+            reply_count: Number(c.total_number ?? replies.length ?? 0),
+            replies: ${includeReplies} ? replies : undefined,
             time: c.created_at || '',
           };
-          if (c.reply_comment) {
-            item.reply_to = (c.reply_comment.user?.screen_name || '') + ': ' + strip(c.reply_comment.text || '').substring(0, 80);
-          }
-          return item;
         });
+        return { items, next_cursor: String(data.max_id ?? data.next_cursor ?? ''), has_more: Boolean(data.max_id || data.has_more) };
       })()
-    `)), 'weibo comments');
-        return data;
+    `));
+
+            if (payload?.auth) throw new CommandExecutionError('Weibo login is required to read comments');
+            if (payload?.error) throw new CommandExecutionError(`weibo comments: ${String(payload.error)}`);
+            const items = Array.isArray(payload) ? payload : payload?.items;
+            if (!Array.isArray(items)) throw new CommandExecutionError('weibo comments returned malformed extraction payload');
+            for (const item of items) {
+                if (!item || (item.comment_id && seenComments.has(item.comment_id))) continue;
+                if (item.comment_id) seenComments.add(item.comment_id);
+                rows.push({ rank: rows.length + 1, ...item });
+                if (rows.length >= count) break;
+            }
+            if (Array.isArray(payload)) break;
+            nextCursor = payload.next_cursor || null;
+            hasMore = payload.has_more === true && Boolean(nextCursor);
+            if (!hasMore || !nextCursor || nextCursor === cursor) break;
+            cursor = nextCursor;
+        }
+        return rows.map((row) => ({ ...row, next_cursor: nextCursor, has_more: hasMore }));
     },
 });

@@ -11,17 +11,21 @@ const temp = mkdtempSync(join(tmpdir(), 'bycli-package-install-'));
 const artifacts = join(temp, 'artifacts');
 const project = join(temp, 'project');
 const mainStage = join(temp, 'main-package');
+const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
 function run(command, args, cwd = root) {
   return execFileSync(command, args, {
     cwd,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
+    // npm is a .cmd shim on Windows and needs shell dispatch when invoked
+    // from Node's child_process API.
+    shell: process.platform === 'win32',
   });
 }
 
 function pack(cwd) {
-  const result = JSON.parse(run('npm', [
+  const result = JSON.parse(run(npmCommand, [
     'pack', '--json', '--ignore-scripts', '--pack-destination', artifacts,
   ], cwd));
   assert.equal(result.length, 1);
@@ -75,7 +79,7 @@ try {
   assert(![...core.files].some((file) => file.startsWith('src/')), 'recorder-core tarball includes src/');
 
   writeFileSync(join(project, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
-  run('npm', [
+  run(npmCommand, [
     'install', '--ignore-scripts', '--no-audit', '--no-fund', core.tarball, main.tarball,
   ], project);
 

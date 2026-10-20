@@ -60,72 +60,112 @@ const NON_TITLE_LINES = new Set([
     '展现', '阅读', '点赞', '评论',
     '查看数据', '查看评论', '修改', '更多', '首发',
     '已发布', '定时发布', '定时发布中', '由文章生成', '审核中',
+    '来自抖音', '自动同步', '全部', '文章', '视频', '微头条', '小视频', '音频', '合集', '草稿箱',
 ]);
 
 const STATS_RE = /展现\s*([\d,]+)\s*阅读\s*([\d,]+)\s*点赞\s*([\d,]+)\s*评论\s*([\d,]*)/;
 
+const ARTICLE_DATE_RE = /^(?:\d{2}-\d{2}|\d{4}-\d{2}-\d{2})\s+\d{2}:\d{2}$/;
+const ARTICLE_TIME_RE = /^\d{2}:\d{2}$/;
+const ARTICLE_STATUS = new Set(['已发布', '定时发布中', '审核中', '由文章生成', '未通过', '仅我可见']);
+const ARTICLE_ACTIONS = new Set(['查看数据', '查看评论', '修改', '更多', '设为公开', '删除作品']);
+
+function normalizeArticleLine(line) {
+    return String(line || '').trim().replace(/^[-•]\s*/, '').trim();
+}
+
+function isMetadataOnlyLine(value) {
+    let remainder = value;
+    for (const token of [
+        ...ARTICLE_STATUS,
+        '来自抖音', '自动同步',
+        ...ARTICLE_ACTIONS,
+    ]) {
+        remainder = remainder.split(token).join('');
+    }
+    return remainder.replace(/[\s|·•：:：]/g, '') === '';
+}
+
+function extractArticleStats(lines) {
+    const stats = { '展现': null, '阅读': null, '点赞': null, '评论': null };
+    let found = false;
+    for (const rawLine of lines) {
+        const line = normalizeArticleLine(rawLine);
+        const combined = line.match(STATS_RE);
+        if (combined) {
+            stats['展现'] = combined[1];
+            stats['阅读'] = combined[2];
+            stats['点赞'] = combined[3];
+            stats['评论'] = combined[4] || '0';
+            found = true;
+            continue;
+        }
+        const metrics = [
+            ['展现', /展现\s*([\d,]+)/],
+            ['阅读', /(?:阅读|播放)\s*([\d,]+)/],
+            ['点赞', /点赞\s*([\d,]+)/],
+            ['评论', /评论\s*([\d,]+)/],
+        ];
+        for (const [name, pattern] of metrics) {
+            const match = line.match(pattern);
+            if (match) {
+                stats[name] = match[1];
+                found = true;
+            }
+        }
+    }
+    return found ? stats : null;
+}
+
+function isArticleTitleCandidate(line) {
+    const value = normalizeArticleLine(line);
+    if (!value || value.length >= 160 || /^\d+$/.test(value)) return false;
+    if (ARTICLE_DATE_RE.test(value) || ARTICLE_TIME_RE.test(value)) return false;
+    if (NON_TITLE_LINES.has(value) || ARTICLE_STATUS.has(value) || ARTICLE_ACTIONS.has(value)) return false;
+    if (isMetadataOnlyLine(value)) return false;
+    if (/^(?:展现|阅读|播放|点赞|评论|收藏|转发)\s*[\d,]+/.test(value)) return false;
+    return true;
+}
+
 /**
- * Extract creator-backend article rows from the rendered text dump.
+ * Extract creator-backend article rows from both legacy and current rendered text.
  *
- * Surfaces every row anchored on a `MM-DD HH:MM` line; if the matching stats
- * line never came through (slow render / missing element), the row is still
- * emitted with `null` for stat columns rather than silently dropped.
+ * Older pages place `MM-DD HH:MM` before the title. The current creator page
+ * places a full `YYYY-MM-DD HH:MM` publish date after the title/status/stats
+ * block, and emits each metric on a separate line (for example `播放 387`).
  */
 export function parseToutiaoArticlesText(text) {
-    const lines = String(text || '').split('\n').map((line) => line.trim()).filter(Boolean);
+    const lines = String(text || '').split('\n').map(normalizeArticleLine).filter(Boolean);
+    const anchors = lines
+        .map((line, index) => ({ line, index }))
+        .filter(({ line }) => ARTICLE_DATE_RE.test(line));
     const results = [];
 
-    for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        if (!/^\d{2}-\d{2}\s+\d{2}:\d{2}$/.test(line)) continue;
-
-        const date = line;
+    for (let anchorIndex = 0; anchorIndex < anchors.length; anchorIndex++) {
+        const { line: date, index } = anchors[anchorIndex];
+        const nextIndex = anchors[anchorIndex + 1]?.index ?? lines.length;
+        const blockStart = anchorIndex === 0 ? 0 : anchors[anchorIndex - 1].index + 1;
+        const block = lines.slice(blockStart, nextIndex);
         let title = null;
-        let status = null;
-        let stats = null;
 
-        for (let back = 3; back >= 1; back--) {
-            const prev = lines[i - back] || '';
-            if (!prev || prev.length >= 100 || /^\d+$/.test(prev) || NON_TITLE_LINES.has(prev)) continue;
-            title = prev;
-            break;
-        }
-
-        for (let fwd = 1; fwd < 8; fwd++) {
-            const fwdLine = lines[i + fwd] || '';
-            if (fwdLine === '已发布' || fwdLine === '定时发布中' || fwdLine === '审核中' || fwdLine === '由文章生成') {
-                status = fwdLine;
-            }
-            if (fwdLine.includes('展现') && fwdLine.includes('阅读')) {
-                const match = fwdLine.match(STATS_RE);
-                if (match) {
-                    stats = {
-                        '展现': match[1],
-                        '阅读': match[2],
-                        '点赞': match[3],
-                        '评论': match[4] || '0',
-                    };
-                }
+        for (let cursor = index - 1; cursor >= Math.max(blockStart, index - 14); cursor--) {
+            if (isArticleTitleCandidate(lines[cursor])) {
+                title = lines[cursor];
+                break;
             }
         }
-
         if (!title) continue;
 
-        if (stats) {
-            results.push({ title, date, status, ...stats });
-        } else {
-            // Surface partial rows so callers can see they exist (was previously
-            // silently dropped — masking creator-backend slow-render bugs).
-            results.push({
-                title,
-                date,
-                status,
-                '展现': null,
-                '阅读': null,
-                '点赞': null,
-                '评论': null,
-            });
-        }
+        const status = block
+            .flatMap((value) => [...ARTICLE_STATUS].filter((candidate) => value.includes(candidate)))
+            .sort((a, b) => b.length - a.length)[0] || null;
+        const stats = extractArticleStats(block);
+        results.push({
+            title,
+            date,
+            status,
+            ...(stats || { '展现': null, '阅读': null, '点赞': null, '评论': null }),
+        });
     }
 
     return results;

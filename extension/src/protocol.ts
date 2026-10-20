@@ -49,6 +49,8 @@ export interface Command {
   siteSession?: 'ephemeral' | 'persistent';
   /** URL to navigate to (navigate action) */
   url?: string;
+  /** Navigation wait policy. 'none' returns after the guarded tab update starts. */
+  waitUntil?: 'load' | 'none';
   /** Sub-operation for tabs: list, new, close, select, focus */
   op?: 'list' | 'new' | 'close' | 'select' | 'focus';
   /** Tab index for tabs select/close */

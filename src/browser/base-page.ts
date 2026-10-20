@@ -820,6 +820,19 @@ export abstract class BasePage implements IPage {
       }
 
       await this.setFileInputBySelector(files, selector);
+      // CDP DOM.setFileInputFiles updates the FileList but does not reliably
+      // fire the DOM events that React/Vue upload widgets use to start their
+      // uploader. Dispatch both events after setting the files so sites that
+      // depend on the change handler actually begin uploading.
+      await this.evaluate(`
+        (() => {
+          const el = window.__resolved;
+          if (!el) return false;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        })()
+      `).catch(() => undefined);
       const verification = await this.evaluate(`
         (() => {
           const el = window.__resolved;

@@ -37,6 +37,8 @@ export interface DaemonCommand {
   /** Adapter site session lifecycle. Persistent site sessions do not idle-expire. */
   siteSession?: 'ephemeral' | 'persistent';
   url?: string;
+  /** Navigation wait policy. 'none' returns after the guarded tab update starts. */
+  waitUntil?: 'load' | 'none';
   op?: string;
   index?: number;
   domain?: string;

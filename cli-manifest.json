@@ -15012,6 +15012,41 @@
     "navigateBefore": false
   },
   {
+    "site": "ima",
+    "name": "status",
+    "description": "查询 IMA 知识库内容状态",
+    "access": "read",
+    "domain": "ima.qq.com",
+    "strategy": "cookie",
+    "browser": true,
+    "args": [
+      {
+        "name": "knowledgeBase",
+        "type": "string",
+        "required": true,
+        "positional": true,
+        "help": "知识库名称或 ID"
+      }
+    ],
+    "columns": [
+      "knowledgeBaseId",
+      "knowledgeBase",
+      "title",
+      "mediaId",
+      "mediaState",
+      "mediaAuditStatus",
+      "accessStatus",
+      "parseProgress",
+      "parseErrInfo",
+      "updateTime",
+      "url"
+    ],
+    "type": "js",
+    "modulePath": "ima/status.js",
+    "sourceFile": "ima/status.js",
+    "navigateBefore": false
+  },
+  {
     "site": "imdb",
     "name": "person",
     "description": "Get actor or director info",
@@ -28101,6 +28136,160 @@
   },
   {
     "site": "toutiao",
+    "name": "article-comments",
+    "description": "采集今日头条文章评论",
+    "access": "read",
+    "domain": "mp.toutiao.com",
+    "strategy": "ui",
+    "browser": true,
+    "args": [
+      {
+        "name": "article",
+        "type": "string",
+        "required": true,
+        "positional": true,
+        "help": "文章 URL、ID 或标题"
+      }
+    ],
+    "columns": [
+      "article",
+      "commentCount",
+      "comments",
+      "empty",
+      "raw"
+    ],
+    "type": "js",
+    "modulePath": "toutiao/article-comments.js",
+    "sourceFile": "toutiao/article-comments.js",
+    "navigateBefore": true
+  },
+  {
+    "site": "toutiao",
+    "name": "article-download",
+    "description": "下载今日头条文章正文为 Markdown 或 JSON",
+    "access": "read",
+    "domain": "www.toutiao.com",
+    "strategy": "ui",
+    "browser": true,
+    "args": [
+      {
+        "name": "article",
+        "type": "string",
+        "required": true,
+        "positional": true,
+        "help": "今日头条文章 URL 或数字 ID"
+      },
+      {
+        "name": "output",
+        "type": "str",
+        "default": "./toutiao-downloads",
+        "required": false,
+        "help": "输出目录"
+      },
+      {
+        "name": "output-format",
+        "type": "str",
+        "default": "md",
+        "required": false,
+        "help": "文件格式：md 或 json（CLI 的 -f/--format 仍用于控制命令输出）"
+      }
+    ],
+    "columns": [
+      "url",
+      "title",
+      "author",
+      "published",
+      "format",
+      "path",
+      "bytes"
+    ],
+    "type": "js",
+    "modulePath": "toutiao/article-download.js",
+    "sourceFile": "toutiao/article-download.js",
+    "navigateBefore": true,
+    "siteSession": "ephemeral"
+  },
+  {
+    "site": "toutiao",
+    "name": "article-publish",
+    "description": "发布今日头条文章（默认 dry-run，使用 --execute 才提交）",
+    "access": "write",
+    "domain": "mp.toutiao.com",
+    "strategy": "ui",
+    "browser": true,
+    "args": [
+      {
+        "name": "title",
+        "type": "string",
+        "required": true,
+        "positional": true,
+        "help": "文章标题（2-30 字）"
+      },
+      {
+        "name": "content",
+        "type": "string",
+        "required": false,
+        "help": "文章正文"
+      },
+      {
+        "name": "content-file",
+        "type": "string",
+        "required": false,
+        "help": "正文文件路径"
+      },
+      {
+        "name": "execute",
+        "type": "boolean",
+        "default": false,
+        "required": false,
+        "help": "实际提交发布；不传则仅 dry-run"
+      }
+    ],
+    "columns": [
+      "status",
+      "title",
+      "contentLength",
+      "url",
+      "message"
+    ],
+    "type": "js",
+    "modulePath": "toutiao/article-publish.js",
+    "sourceFile": "toutiao/article-publish.js",
+    "navigateBefore": true
+  },
+  {
+    "site": "toutiao",
+    "name": "article-stats",
+    "description": "获取今日头条文章统计数据",
+    "access": "read",
+    "domain": "mp.toutiao.com",
+    "strategy": "ui",
+    "browser": true,
+    "args": [
+      {
+        "name": "article",
+        "type": "string",
+        "required": true,
+        "positional": true,
+        "help": "文章 URL、ID 或标题"
+      }
+    ],
+    "columns": [
+      "title",
+      "status",
+      "impressions",
+      "views",
+      "likes",
+      "comments",
+      "text"
+    ],
+    "type": "js",
+    "modulePath": "toutiao/article-stats.js",
+    "sourceFile": "toutiao/article-stats.js",
+    "navigateBefore": true
+  },
+  {
+    "site": "toutiao",
     "name": "articles",
     "description": "获取头条号创作者后台文章列表及数据",
     "access": "read",
@@ -28163,6 +28352,54 @@
   },
   {
     "site": "toutiao",
+    "name": "image-publish",
+    "description": "发布今日头条原文图文（默认 dry-run）",
+    "access": "write",
+    "domain": "mp.toutiao.com",
+    "strategy": "ui",
+    "browser": true,
+    "args": [
+      {
+        "name": "title",
+        "type": "string",
+        "required": true,
+        "positional": true,
+        "help": "图文标题"
+      },
+      {
+        "name": "image",
+        "type": "string",
+        "required": true,
+        "help": "本地封面图片路径"
+      },
+      {
+        "name": "content",
+        "type": "string",
+        "required": false,
+        "help": "原始 Markdown 文章路径（execute 时必填）"
+      },
+      {
+        "name": "execute",
+        "type": "boolean",
+        "default": false,
+        "required": false,
+        "help": "实际提交发布"
+      }
+    ],
+    "columns": [
+      "status",
+      "title",
+      "image",
+      "contentChars",
+      "message"
+    ],
+    "type": "js",
+    "modulePath": "toutiao/image-publish.js",
+    "sourceFile": "toutiao/image-publish.js",
+    "navigateBefore": true
+  },
+  {
+    "site": "toutiao",
     "name": "search",
     "description": "搜索今日头条公开站内内容",
     "access": "read",
@@ -28208,6 +28445,119 @@
     "type": "js",
     "modulePath": "toutiao/search.js",
     "sourceFile": "toutiao/search.js"
+  },
+  {
+    "site": "toutiao",
+    "name": "video-download",
+    "description": "下载今日头条视频到本地文件",
+    "access": "read",
+    "domain": "www.toutiao.com",
+    "strategy": "public",
+    "browser": true,
+    "args": [
+      {
+        "name": "video",
+        "type": "string",
+        "required": true,
+        "positional": true,
+        "help": "今日头条视频 URL 或数字 ID"
+      },
+      {
+        "name": "output",
+        "type": "str",
+        "default": "./toutiao-downloads",
+        "required": false,
+        "help": "输出目录"
+      }
+    ],
+    "columns": [
+      "url",
+      "title",
+      "path",
+      "bytes",
+      "contentType"
+    ],
+    "type": "js",
+    "modulePath": "toutiao/video-download.js",
+    "sourceFile": "toutiao/video-download.js"
+  },
+  {
+    "site": "toutiao",
+    "name": "video-publish",
+    "description": "发布今日头条视频（默认 dry-run）",
+    "access": "write",
+    "domain": "mp.toutiao.com",
+    "strategy": "ui",
+    "browser": true,
+    "args": [
+      {
+        "name": "title",
+        "type": "string",
+        "required": true,
+        "positional": true,
+        "help": "视频标题"
+      },
+      {
+        "name": "video",
+        "type": "string",
+        "required": true,
+        "help": "本地视频路径"
+      },
+      {
+        "name": "cover",
+        "type": "string",
+        "required": false,
+        "help": "可选封面图片路径"
+      },
+      {
+        "name": "execute",
+        "type": "boolean",
+        "default": false,
+        "required": false,
+        "help": "实际提交发布"
+      }
+    ],
+    "columns": [
+      "status",
+      "title",
+      "video",
+      "message"
+    ],
+    "type": "js",
+    "modulePath": "toutiao/video-publish.js",
+    "sourceFile": "toutiao/video-publish.js",
+    "navigateBefore": true
+  },
+  {
+    "site": "toutiao",
+    "name": "video-stats",
+    "description": "获取今日头条视频统计数据",
+    "access": "read",
+    "domain": "mp.toutiao.com",
+    "strategy": "ui",
+    "browser": true,
+    "args": [
+      {
+        "name": "video",
+        "type": "string",
+        "required": true,
+        "positional": true,
+        "help": "视频 URL、ID 或标题"
+      }
+    ],
+    "columns": [
+      "title",
+      "status",
+      "impressions",
+      "views",
+      "likes",
+      "comments",
+      "text"
+    ],
+    "type": "js",
+    "modulePath": "toutiao/video-stats.js",
+    "sourceFile": "toutiao/video-stats.js",
+    "navigateBefore": true
   },
   {
     "site": "tvmaze",
@@ -30435,6 +30785,171 @@
   },
   {
     "site": "weibo",
+    "name": "article-download",
+    "description": "Download a Weibo long article as Markdown or JSON",
+    "access": "read",
+    "domain": "weibo.com",
+    "strategy": "cookie",
+    "browser": true,
+    "args": [
+      {
+        "name": "id",
+        "type": "string",
+        "required": true,
+        "positional": true,
+        "help": "Weibo article ID, mblogid, or URL"
+      },
+      {
+        "name": "output",
+        "type": "string",
+        "default": "./weibo-downloads",
+        "required": false,
+        "help": "Output directory"
+      },
+      {
+        "name": "output-format",
+        "type": "string",
+        "default": "md",
+        "required": false,
+        "help": "md or json"
+      }
+    ],
+    "columns": [
+      "id",
+      "mblogid",
+      "url",
+      "title",
+      "format",
+      "path",
+      "bytes"
+    ],
+    "type": "js",
+    "modulePath": "weibo/article-download.js",
+    "sourceFile": "weibo/article-download.js",
+    "navigateBefore": "https://weibo.com"
+  },
+  {
+    "site": "weibo",
+    "name": "article-publish",
+    "description": "Save a Weibo long article draft from offline-prepared HTML (dry-run by default; publishing stays manual)",
+    "access": "write",
+    "domain": "weibo.com",
+    "strategy": "ui",
+    "browser": true,
+    "args": [
+      {
+        "name": "title",
+        "type": "string",
+        "required": true,
+        "help": "Article title (max 32 characters)"
+      },
+      {
+        "name": "summary",
+        "type": "string",
+        "required": false,
+        "help": "Optional lead paragraph (max 44 characters)"
+      },
+      {
+        "name": "content",
+        "type": "string",
+        "required": false,
+        "help": "Inline article content"
+      },
+      {
+        "name": "content-file",
+        "type": "string",
+        "required": false,
+        "help": "HTML or plain-text file; local <img> paths resolve relative to this file"
+      },
+      {
+        "name": "content-format",
+        "type": "string",
+        "required": false,
+        "help": "Content format (default: html for .html/.htm files, otherwise text)",
+        "choices": [
+          "text",
+          "html"
+        ]
+      },
+      {
+        "name": "cover",
+        "type": "string",
+        "required": false,
+        "help": "Cover image path (jpg/png/gif/bmp)"
+      },
+      {
+        "name": "execute",
+        "type": "boolean",
+        "default": false,
+        "required": false,
+        "help": "Fill the editor and save a draft (never publishes)"
+      },
+      {
+        "name": "timeout",
+        "type": "int",
+        "default": 300,
+        "required": false,
+        "help": "Max seconds for the whole run; each body image upload can take up to 90s"
+      }
+    ],
+    "columns": [
+      "status",
+      "draft_id",
+      "title",
+      "content_format",
+      "images",
+      "cover",
+      "warnings",
+      "message",
+      "url"
+    ],
+    "type": "js",
+    "modulePath": "weibo/article-publish.js",
+    "sourceFile": "weibo/article-publish.js",
+    "navigateBefore": true
+  },
+  {
+    "site": "weibo",
+    "name": "article-stats",
+    "description": "获取微博长文章互动数据",
+    "access": "read",
+    "domain": "weibo.com",
+    "strategy": "cookie",
+    "browser": true,
+    "args": [
+      {
+        "name": "id",
+        "type": "string",
+        "required": true,
+        "positional": true,
+        "help": "微博 ID 或 mblogid"
+      }
+    ],
+    "columns": [
+      "id",
+      "mblogid",
+      "url",
+      "author",
+      "author_uid",
+      "created_at",
+      "content_type",
+      "requested_content_type",
+      "reposts",
+      "comments",
+      "likes",
+      "collects",
+      "views",
+      "video_plays",
+      "visibility",
+      "observed_at"
+    ],
+    "type": "js",
+    "modulePath": "weibo/stats.js",
+    "sourceFile": "weibo/stats.js",
+    "navigateBefore": "https://weibo.com"
+  },
+  {
+    "site": "weibo",
     "name": "comments",
     "description": "Get comments on a Weibo post",
     "access": "read",
@@ -30447,23 +30962,52 @@
         "type": "str",
         "required": true,
         "positional": true,
-        "help": "Post ID (numeric idstr)"
+        "help": "Post ID, mblogid, or Weibo post URL"
       },
       {
         "name": "limit",
         "type": "int",
         "default": 20,
         "required": false,
-        "help": "Number of comments (max 50)"
+        "help": "Number of comments (max 100)"
+      },
+      {
+        "name": "cursor",
+        "type": "string",
+        "required": false,
+        "help": "Resume cursor returned by Weibo"
+      },
+      {
+        "name": "sort",
+        "type": "string",
+        "default": "time",
+        "required": false,
+        "help": "Comment order",
+        "choices": [
+          "hot",
+          "time"
+        ]
+      },
+      {
+        "name": "include-replies",
+        "type": "boolean",
+        "default": false,
+        "required": false,
+        "help": "Include structured reply comments"
       }
     ],
     "columns": [
       "rank",
+      "comment_id",
       "author",
+      "author_uid",
       "text",
       "likes",
+      "reply_count",
       "replies",
-      "time"
+      "time",
+      "next_cursor",
+      "has_more"
     ],
     "type": "js",
     "modulePath": "weibo/comments.js",
@@ -30604,6 +31148,124 @@
   },
   {
     "site": "weibo",
+    "name": "image-download",
+    "description": "Download original images from a Weibo post",
+    "access": "read",
+    "domain": "weibo.com",
+    "strategy": "cookie",
+    "browser": true,
+    "args": [
+      {
+        "name": "id",
+        "type": "string",
+        "required": true,
+        "positional": true,
+        "help": "Weibo post ID, mblogid, or URL"
+      },
+      {
+        "name": "output",
+        "type": "string",
+        "default": "./weibo-downloads",
+        "required": false,
+        "help": "Output directory"
+      }
+    ],
+    "columns": [
+      "id",
+      "mblogid",
+      "index",
+      "url",
+      "path",
+      "bytes",
+      "contentType"
+    ],
+    "type": "js",
+    "modulePath": "weibo/image-download.js",
+    "sourceFile": "weibo/image-download.js",
+    "navigateBefore": "https://weibo.com"
+  },
+  {
+    "site": "weibo",
+    "name": "image-publish",
+    "description": "Publish a Weibo image post (dry-run by default)",
+    "access": "write",
+    "domain": "weibo.com",
+    "strategy": "ui",
+    "browser": true,
+    "args": [
+      {
+        "name": "text",
+        "type": "string",
+        "required": true,
+        "positional": true,
+        "help": "Post text"
+      },
+      {
+        "name": "images",
+        "type": "string",
+        "required": true,
+        "help": "Image paths, comma-separated (jpg/png/gif/webp)"
+      },
+      {
+        "name": "execute",
+        "type": "boolean",
+        "default": false,
+        "required": false,
+        "help": "Actually publish after manual confirmation"
+      }
+    ],
+    "columns": [
+      "status",
+      "message",
+      "text"
+    ],
+    "type": "js",
+    "modulePath": "weibo/image-publish.js",
+    "sourceFile": "weibo/image-publish.js",
+    "navigateBefore": true
+  },
+  {
+    "site": "weibo",
+    "name": "image-stats",
+    "description": "获取图片微博互动数据",
+    "access": "read",
+    "domain": "weibo.com",
+    "strategy": "cookie",
+    "browser": true,
+    "args": [
+      {
+        "name": "id",
+        "type": "string",
+        "required": true,
+        "positional": true,
+        "help": "微博 ID 或 mblogid"
+      }
+    ],
+    "columns": [
+      "id",
+      "mblogid",
+      "url",
+      "author",
+      "author_uid",
+      "created_at",
+      "content_type",
+      "requested_content_type",
+      "reposts",
+      "comments",
+      "likes",
+      "collects",
+      "views",
+      "video_plays",
+      "visibility",
+      "observed_at"
+    ],
+    "type": "js",
+    "modulePath": "weibo/stats.js",
+    "sourceFile": "weibo/stats.js",
+    "navigateBefore": "https://weibo.com"
+  },
+  {
+    "site": "weibo",
     "name": "me",
     "description": "My Weibo profile info",
     "access": "read",
@@ -30639,7 +31301,7 @@
         "type": "str",
         "required": true,
         "positional": true,
-        "help": "Post ID (numeric idstr or mblogid from URL)"
+        "help": "Post ID, mblogid, or Weibo post URL"
       }
     ],
     "columns": [
@@ -30672,6 +31334,12 @@
         "type": "string",
         "required": false,
         "help": "Image paths, comma-separated, max 9 (jpg/png/gif/webp)"
+      },
+      {
+        "name": "video",
+        "type": "string",
+        "required": false,
+        "help": "Video path (mp4/mov/m4v/webm), mutually exclusive with --images"
       }
     ],
     "columns": [
@@ -30680,8 +31348,8 @@
       "text"
     ],
     "type": "js",
-    "modulePath": "weibo/publish.js",
-    "sourceFile": "weibo/publish.js",
+    "modulePath": "weibo/image-publish.js",
+    "sourceFile": "weibo/image-publish.js",
     "navigateBefore": true
   },
   {
@@ -30719,6 +31387,46 @@
     "type": "js",
     "modulePath": "weibo/search.js",
     "sourceFile": "weibo/search.js",
+    "navigateBefore": "https://weibo.com"
+  },
+  {
+    "site": "weibo",
+    "name": "short-stats",
+    "description": "获取短微博互动数据",
+    "access": "read",
+    "domain": "weibo.com",
+    "strategy": "cookie",
+    "browser": true,
+    "args": [
+      {
+        "name": "id",
+        "type": "string",
+        "required": true,
+        "positional": true,
+        "help": "微博 ID 或 mblogid"
+      }
+    ],
+    "columns": [
+      "id",
+      "mblogid",
+      "url",
+      "author",
+      "author_uid",
+      "created_at",
+      "content_type",
+      "requested_content_type",
+      "reposts",
+      "comments",
+      "likes",
+      "collects",
+      "views",
+      "video_plays",
+      "visibility",
+      "observed_at"
+    ],
+    "type": "js",
+    "modulePath": "weibo/stats.js",
+    "sourceFile": "weibo/stats.js",
     "navigateBefore": "https://weibo.com"
   },
   {
@@ -30814,6 +31522,139 @@
     "type": "js",
     "modulePath": "weibo/user-posts.js",
     "sourceFile": "weibo/user-posts.js",
+    "navigateBefore": "https://weibo.com"
+  },
+  {
+    "site": "weibo",
+    "name": "video-download",
+    "description": "Download a video from a Weibo post",
+    "access": "read",
+    "domain": "weibo.com",
+    "strategy": "cookie",
+    "browser": true,
+    "args": [
+      {
+        "name": "id",
+        "type": "string",
+        "required": true,
+        "positional": true,
+        "help": "Weibo post ID, mblogid, or URL"
+      },
+      {
+        "name": "output",
+        "type": "string",
+        "default": "./weibo-downloads",
+        "required": false,
+        "help": "Output directory"
+      }
+    ],
+    "columns": [
+      "id",
+      "mblogid",
+      "url",
+      "title",
+      "path",
+      "bytes",
+      "contentType"
+    ],
+    "type": "js",
+    "modulePath": "weibo/video-download.js",
+    "sourceFile": "weibo/video-download.js",
+    "navigateBefore": "https://weibo.com"
+  },
+  {
+    "site": "weibo",
+    "name": "video-publish",
+    "description": "Publish a Weibo video post (dry-run by default)",
+    "access": "write",
+    "domain": "weibo.com",
+    "strategy": "ui",
+    "browser": true,
+    "args": [
+      {
+        "name": "text",
+        "type": "string",
+        "required": true,
+        "positional": true,
+        "help": "Post text (max 2000 characters; the first 30 become the video title)"
+      },
+      {
+        "name": "video",
+        "type": "string",
+        "required": true,
+        "help": "Video path (mp4/mov/m4v/webm)"
+      },
+      {
+        "name": "ai-generated",
+        "type": "boolean",
+        "default": false,
+        "required": false,
+        "help": "Declare the video as 含AI生成内容. The default declaration is 我的内容无需声明"
+      },
+      {
+        "name": "execute",
+        "type": "boolean",
+        "default": false,
+        "required": false,
+        "help": "Actually publish after manual confirmation"
+      },
+      {
+        "name": "timeout",
+        "type": "int",
+        "default": 300,
+        "required": false,
+        "help": "Max seconds for the whole run, including video upload"
+      }
+    ],
+    "columns": [
+      "status",
+      "message",
+      "text",
+      "video"
+    ],
+    "type": "js",
+    "modulePath": "weibo/video-publish.js",
+    "sourceFile": "weibo/video-publish.js",
+    "navigateBefore": true
+  },
+  {
+    "site": "weibo",
+    "name": "video-stats",
+    "description": "获取视频微博互动数据",
+    "access": "read",
+    "domain": "weibo.com",
+    "strategy": "cookie",
+    "browser": true,
+    "args": [
+      {
+        "name": "id",
+        "type": "string",
+        "required": true,
+        "positional": true,
+        "help": "微博 ID 或 mblogid"
+      }
+    ],
+    "columns": [
+      "id",
+      "mblogid",
+      "url",
+      "author",
+      "author_uid",
+      "created_at",
+      "content_type",
+      "requested_content_type",
+      "reposts",
+      "comments",
+      "likes",
+      "collects",
+      "views",
+      "video_plays",
+      "visibility",
+      "observed_at"
+    ],
+    "type": "js",
+    "modulePath": "weibo/stats.js",
+    "sourceFile": "weibo/stats.js",
     "navigateBefore": "https://weibo.com"
   },
   {
