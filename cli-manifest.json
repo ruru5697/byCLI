@@ -28275,6 +28275,7 @@
       }
     ],
     "columns": [
+      "found",
       "title",
       "status",
       "impressions",
@@ -28546,6 +28547,7 @@
       }
     ],
     "columns": [
+      "found",
       "title",
       "status",
       "impressions",
@@ -30897,6 +30899,8 @@
       "draft_id",
       "title",
       "content_format",
+      "content_source",
+      "content_chars",
       "images",
       "cover",
       "warnings",
