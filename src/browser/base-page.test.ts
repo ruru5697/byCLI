@@ -871,6 +871,7 @@ describe('BasePage native input routing', () => {
     page.setFileInput = vi.fn().mockResolvedValue(undefined);
     page.results = [
       resolveOk,
+      true, // input/change events dispatched after assigning the FileList
       ['receipt.pdf'],
     ];
     page.withArgsResults = [{ ok: true, multiple: false, accept: 'application/pdf' }, undefined];
@@ -887,6 +888,8 @@ describe('BasePage native input routing', () => {
     });
 
     expect(page.setFileInput).toHaveBeenCalledWith(['/tmp/receipt.pdf'], expect.stringMatching(/data-bycli-upload-target/));
+    expect(page.scripts.some(script => script.includes("new Event('input'"))).toBe(true);
+    expect(page.scripts.some(script => script.includes("new Event('change'"))).toBe(true);
     expect(page.withArgs.at(0)).toMatchObject({ markerAttr: 'data-bycli-upload-target' });
     expect(page.withArgs.at(-1)).toMatchObject({ markerAttr: 'data-bycli-upload-target' });
   });
