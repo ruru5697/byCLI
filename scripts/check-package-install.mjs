@@ -52,6 +52,11 @@ try {
   for (const file of [
     'dist/src/download/media-validation.js',
     'clis/_shared/video-submit.js',
+    'clis/_shared/output-filename.js',
+    'clis/weibo/_comments.js',
+    'clis/weibo/_article-publish.js',
+    'clis/toutiao/_article-download.js',
+    'clis/toutiao/_video-stats.js',
     'clis/_shared/read-response-capture.js',
     'clis/xiaohongshu/_image-prepare.js',
     'clis/xiaohongshu/_stats.js',
