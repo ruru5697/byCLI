@@ -62,3 +62,9 @@ bycli csdn stats --content-id ARTICLE_ID --account-id PUBLIC_AUTHOR --type artic
 通用CDP网络捕获在一处本机环境曾阻塞Worker。CSDN采用当前页定向XHR/fetch观察器，已取得真实发布回执；不将这项适配描述为通用捕获问题全部解决。
 
 账号绑定的实验脚本、截图、草稿内容和媒体保留在操作者本地，不随npm包分发。正常使用或验证发布时仍须针对新内容重新确认；历史授权不适用于新的作品。
+
+## 微博头条和知识库扩展
+
+微博、头条的新增命令使用各自的参数与确认流程，不套用本文四平台的job/review协议。微博长文章入口只保存草稿；图文和视频以及头条发布入口默认预检，显式 `--execute` 才执行。旧 `weibo publish` 会直接执行发布，使用前仍须确认具体内容。
+
+完整参数、统计口径与边界见[微博](../adapters/browser/weibo.md)、[今日头条](../adapters/browser/toutiao.md)和[ima知识库状态](../adapters/browser/ima.md#status)。
