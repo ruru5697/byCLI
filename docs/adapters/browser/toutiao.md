@@ -88,3 +88,46 @@ The public search page is parsed without login. Optional fields that the upstrea
 - `hot` `--limit` accepts integers in `[1, 50]`; out-of-range values raise an `ArgumentError` (no silent clamp).
 - `articles` `--page` accepts integers in `[1, 4]`, matching the contributor's verified range on the creator dashboard; out-of-range values raise an `ArgumentError`.
 - `search` `--limit` accepts integers in `[1, 50]`; the default is 20 and out-of-range values raise an `ArgumentError`.
+
+## 文章和视频下载
+
+```bash
+bycli toutiao article-download ARTICLE_URL_OR_ID --output ./downloads --output-format md -f json
+bycli toutiao article-download ARTICLE_URL_OR_ID --output ./downloads --output-format json -f json
+bycli toutiao video-download VIDEO_URL_OR_ID --output ./downloads -f json
+```
+
+文章命令用 Chrome 渲染正文，固定等待页面内容加载后提取；可传头条文章链接或8至32位数字ID。`--output-format` 控制下载文件，`-f` 控制命令输出。视频命令保存页面暴露的视频源。文件名按UTF-8字节截断，给中文长标题保留安全的文件名长度。这些入口不提供小红书、搜狐号下载器的MP4结构验证能力；遇到登录墙、反爬页面或无正文/视频源时会报错。
+
+## 内容发布
+
+| 命令 | 内容与必要参数 | 执行结果 |
+|---|---|---|
+| `bycli toutiao article-publish TITLE` | `--content TEXT` 或 `--content-file PATH` | 默认预检，`--execute` 上传填写并提交文章 |
+| `bycli toutiao image-publish TITLE` | `--image PATH`，执行时需 `--content MARKDOWN_PATH` | 默认预检，`--execute` 提交微头条图文 |
+| `bycli toutiao video-publish TITLE` | `--video PATH`，执行时还需 `--cover PATH` | 默认预检，`--execute` 提交视频 |
+
+所有 `--execute` 操作都需要用户对当前账号、正文、素材和发布设置的明确授权。它们不使用小红书等连接器的job/review协议。
+
+```bash
+# 仅预检
+bycli toutiao article-publish '文章标题' --content-file /absolute/body.txt -f json
+bycli toutiao image-publish '图文标题' --image /absolute/cover.jpg --content /absolute/story.md -f json
+bycli toutiao video-publish '视频标题' --video /absolute/video.mp4 --cover /absolute/cover.jpg -f json
+```
+
+文章标题2至30字符，正文按纯文本填写。图文入口是微头条：当前实现最多取原始Markdown正文的2000字符，超出时按段落截取并在返回消息说明，预览时应核对截取结果。视频执行时必须有封面，需要平台允许的文件输入与裁剪交互。
+
+`submitted` 表示已执行提交，不代表审核通过；`pending` 表示点击后作品列表暂未确认。结果未知时先核对平台作品管理，不自动重复执行。
+
+## 单篇统计和评论
+
+```bash
+bycli toutiao article-stats '精确文章标题' -f json
+bycli toutiao video-stats '精确视频标题' -f json
+bycli toutiao article-comments '精确文章标题' -f json
+```
+
+三个命令都读取当前作品管理页。参数是查询字符串；实现按可见标题或文本查找，优先传精确标题。URL或数字ID没有出现在当前页面时不会自动解析为标题，也不提供遍历全部分页的保证。未命中会报错，不应解释成作品被删除。
+
+统计返回 `found`、标题、状态、展现、播放或阅读、点赞、评论及原始文本。计数保留平台显示字符串，可能含逗号；缺失为 `null`，不是指定日期区间的增量。评论命令当前返回总数、空状态及面板原文，`comments` 数组仍为空，不提供完整逐条评论的采集承诺。
