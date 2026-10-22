@@ -136,6 +136,7 @@ export class Page extends BasePage {
       this._page = undefined;
       result = await sendCommandFull('navigate', {
         url,
+        ...(options?.waitUntil && { waitUntil: options.waitUntil }),
         ...this._cmdOpts(),
       });
     }

@@ -52,6 +52,13 @@ class MockWebSocket {
   }
 }
 
+// Each imported worker must use a test-local successful daemon probe. Real
+// failures schedule reconnects that survive resetModules and leak into later
+// WebSocket assertions when CI has no daemon listening on localhost.
+beforeEach(() => {
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true })));
+});
+
 describe('private ima reader commands', () => {
   beforeEach(() => {
     vi.resetModules();

@@ -566,6 +566,7 @@ describe('Page active target tracking', () => {
     const retryCall = sendCommandFullMock.mock.calls[2];
     expect(retryCall[0]).toBe('navigate');
     expect(retryCall[1]).not.toHaveProperty('page');
+    expect(retryCall[1]).toMatchObject({ waitUntil: 'none' });
   });
 
   it('does not retry stale page errors when no identity was cached', async () => {
