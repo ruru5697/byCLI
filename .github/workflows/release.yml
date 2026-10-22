@@ -71,7 +71,8 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install dependencies
-        run: npm ci
+        # Security Audit runs separately; registry audit outages must not stall installation.
+        run: npm ci --no-audit
 
       - name: Build recorder core
         run: npm run build --workspace @sovovs/bycli-recorder-core
@@ -97,7 +98,7 @@ jobs:
         run: npm run check:package-install
 
       - name: Install extension dependencies
-        run: npm ci
+        run: npm ci --no-audit
         working-directory: extension
 
       - name: Verify extension release version
