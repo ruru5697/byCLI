@@ -33179,6 +33179,42 @@
         "help": "prepare 可选：个人主页竖封面（3:4），本地 PNG/JPEG；不传保留默认"
       },
       {
+        "name": "cover-confirmed",
+        "type": "str",
+        "required": false,
+        "help": "仅 resume：用户已手动确认指定封面；只读核对该卡片后继续其余封面并保存原草稿，不重复点击或上传已完成封面",
+        "choices": [
+          "horizontal",
+          "vertical"
+        ]
+      },
+      {
+        "name": "reopen-saved-draft",
+        "type": "boolean",
+        "required": false,
+        "help": "仅配合 resume --resume-cover-opening：原页已失效且尚未上传任何封面时，按原草稿 ID 重开并严格核对后继续，不重传视频"
+      },
+      {
+        "name": "resume-cover-opening",
+        "type": "str",
+        "required": false,
+        "help": "仅 resume：原弹窗已打开但尚未上传图片时，核对原草稿和两张卡片后原地继续；不重开、不重传视频、不重试未知上传",
+        "choices": [
+          "horizontal",
+          "vertical"
+        ]
+      },
+      {
+        "name": "retry-cover-processing",
+        "type": "str",
+        "required": false,
+        "help": "仅 resume：核对原页明确的画布尺寸为零错误后，有界恢复该封面；不重传视频、不重试未知点击或保存",
+        "choices": [
+          "horizontal",
+          "vertical"
+        ]
+      },
+      {
         "name": "ai-generated",
         "type": "str",
         "required": false,
@@ -33232,7 +33268,7 @@
         "type": "int",
         "default": 180,
         "required": false,
-        "help": "上传处理等待秒数（1–1800）"
+        "help": "整次浏览器操作预算秒数（1–1800）；无进展时提前停止，保留草稿与现场"
       },
       {
         "name": "user-confirmed",

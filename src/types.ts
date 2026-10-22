@@ -94,6 +94,10 @@ export interface IPage {
   goto(url: string, options?: { waitUntil?: 'load' | 'none'; settleMs?: number; stealth?: boolean }): Promise<void>;
   evaluate<T = any>(js: string): Promise<T>;
   evaluate<Args extends unknown[], T>(fn: BrowserEvaluateFunction<Args, T>, ...args: Args): Promise<Awaited<T>>;
+  /** Optional backend capability for UI gestures without automatic retries. */
+  evaluateOnce?(js: string): Promise<unknown>;
+  /** Browser mouse input without automatic transport retries. */
+  nativeClickOnce?(x: number, y: number): Promise<void>;
   /** Safely evaluate JS with pre-serialized arguments — prevents injection. */
   evaluateWithArgs?(js: string, args: Record<string, unknown>): Promise<any>;
   /**

@@ -12,7 +12,7 @@ export function publisherDOM(kind, action, operationId, ai, questionId = '', cat
     const article = kind === 'article', answer = kind === 'answer';
     const valid = article ? location.origin === 'https://zhuanlan.zhihu.com' && /^\/(write|p\/\d+\/edit)\/?$/.test(location.pathname)
         : location.origin === 'https://www.zhihu.com' && (answer ? new RegExp('^/question/' + questionId + '(?:/answer/\\d+)?/?$').test(location.pathname) : location.pathname === '/upload-video');
-    if (!valid) return { error: 'wrong_editor' };
+    if (!valid) return { error: 'wrong_editor', url: location.href };
     let root = document.querySelector('main');
     if (answer) {
         const forms = [...document.querySelectorAll('form.AnswerForm')].filter(visible);

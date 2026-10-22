@@ -30,6 +30,11 @@ const probeDaemonStatus = (
 ).probeDaemonStatus;
 
 describe('daemon-client', () => {
+  it('does not replay a single-execution UI action on network failure', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('connection reset')));
+    await expect(sendCommandOnce('exec', { code: 'button.click()', page: 'exact-editor' })).rejects.toThrow('connection reset');
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn());
   });

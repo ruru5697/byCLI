@@ -2,6 +2,22 @@
 
 发布前必须先保存、重开核对平台草稿，向用户展示具体内容并获得明确确认；然后单独调用 `--mode submit --execute --user-confirmed`。准备阶段不得预先传入确认参数。详见[三平台发布确认流程](../../guide/publishing-confirmation.md)。
 
+`video-publish --timeout` 是整次浏览器操作的总预算，上传、两张封面、保存和重开核对共用同一个截止时间。原生按钮响应连续 5 秒、草稿回执或页面加载连续 30 秒、上传/处理或封面预览连续 60 秒没有可观察进展时提前停止。进度条前进或新的业务状态才算进展；轮询次数、重复状态及签名 URL 刷新不延长等待。没有暴露进度不等于平台处理失败，超时保留为未确认状态，不能自动重复上传、保存或发表。
+
+阶段变化及每 15 秒的进度写入 stderr，stdout 保持最终 JSON。浏览器调用本身尚未返回时，心跳只报告最后已知状态；调用取消仍由 Browser Bridge 和外层进程预算处理，不并发探测页面。operation 中的 `wait`、`wait_error` 保存阶段、无进展时长与诊断，`video-status --operation` 可本地读取。核对失败会撤销旧的已核对标记，只有重新核对成功才恢复可提交状态。
+
+本地视频预览可播放时，平台仍可能在生成默认封面、暂时禁用“保存草稿”。Adapter 在同一总预算内等待原生保存按钮启用，连续 60 秒无进展则保留上传结果并停止；等待期间不点击保存、不重传。原草稿身份、描述或 AI 标注变化时立即拒绝保存。
+
+封面编辑弹窗自身也有视频初始化和图片绑定过程。Adapter 只读观察其初始化与裁剪器状态：初始化完成后才上传封面，裁剪器已绑定当前上传图片后才确认，防止迟到的视频首帧刷新覆盖图片。若原页在确认后明确记录 `imgSizeInvalid width=0 height=0`，且该角色、缩略图、两张卡片及原草稿均匹配，可自动取消失败弹窗并重新配置该角色一次；未知错误、旧日志、卡片变化或已尝试保存均不允许重试。对于保留的旧失败操作，可用 `--mode resume --retry-cover-processing horizontal|vertical` 明确进入同一记录的处理失败恢复；不重新上传视频，不重置原确认和保存历史。
+
+封面“确定/确认”默认自动执行：先滚动、聚焦并等待按钮位置稳定，核对唯一可见控件、预览和命中区域，再使用 `nativeClickOnce` 发送浏览器鼠标输入，不依赖 DOM `.click()`。单次预留使用 `evaluateOnce`，鼠标事件使用无传输重试的通道；结果未知时不补发第二次点击。operation 的 `cover.activation` 区分准备、预留、输入已发出、响应未知及卡片已核验，只有弹窗关闭且对应卡片变化才算确认完成。人工确认不是正常步骤。若旧记录在 `confirm_unknown`，用户明确手动确认了横/竖封面后，才可对原 operation 执行 `--mode resume --cover-confirmed horizontal|vertical`。恢复先在原页核对草稿 ID、描述、AI 标注、该卡片变化及另一卡片未变，再继续尚未配置的封面、保存并重开原草稿；不重新上传视频、不点击已完成封面的确认，不自动发表。
+
+原生保存可能已跳转到草稿箱，旧编辑文档的 Resource Timing 随之消失。跳转只用于读取已有 CDP 捕获；仍须精确 POST 回执的 HTTP 201、errCode 0、时间及草稿 ID 全部匹配，才能确认保存。`video-status --inspect-editor` 可对不确定的封面保存读取已有回执，并只读重开原草稿核对封面；不会重新保存或恢复 AI 标注。没有有效回执或封面不符时保留未知状态，不能把草稿箱页面当作保存成功证明。
+
+浏览器鼠标输入的响应丢失时，Adapter 可只读核对原页：只有对应卡片已变化、另一卡片仍符合记录且弹窗已关闭，才继续尚未配置的封面。对于延迟完成的同类确认，`resume` 先核对原编辑页，不导航丢弃未保存修改；核对成功才继续并保存原草稿。卡片不符、弹窗仍开或结果未知时停止，不重发确认，也不要求人工确认已自动完成的结果。
+
+若原记录停在 `cover.phase=opening`，且尚未选择或上传图片，可用 `--mode resume --resume-cover-opening horizontal|vertical` 核对原草稿、描述、AI 标注、两张卡片和图片哈希后，原地继续未尝试的上传。原编辑页标识已失效时，可同时加 `--reopen-saved-draft`，按原草稿 ID 与描述重开并核对默认两张卡片后再配置；此重开入口要求两角色均未上传、确认或保存。未知上传/确认、已尝试保存或卡片变化均不得借此重试，已完成的封面也不会重复配置；不能新建 operation 或清理 Gate 规避历史。
+
 **Mode**: 🔐 Browser · **Domain**: `channels.weixin.qq.com`
 
 这组只读命令通过当前视频号助手登录会话查询账号统计和作品数据。先在 Chrome 中打开[视频号助手](https://channels.weixin.qq.com/)并扫码登录目标视频号，确保 byCLI 的 [Browser Bridge](/guide/browser-bridge) 已连接。公众号后台的登录状态不能代替视频号助手登录。
@@ -119,7 +135,7 @@ bycli weixin-channels post-detail '<id>' \
 
 调用方先用 `bycli list -f json` 动态发现 `weixin-channels`，再查看相应命令的 `--help`；采集命令使用 `-f json`。浏览器桥接按调用方技能的统一入口预检，适配器自行管理 TAB，无需预先运行 raw browser 命令。
 
-`weixin-channels` 是视频号统计命名空间。`bycli weixin` 的公众号登录 Runner 不接受它，不能将命令改写成公众号命令。`post-detail` 的结果为对象数组，明细位于第一项的 `data_details`，调用方应完整保存嵌套 JSON。
+`weixin-channels` 是视频号命名空间，与公众号 `weixin` 分开。共享 `weixin-browser-runner.mjs` 按站点、域和命令权限检查能力，不能将视频号命令改写成公众号命令。`post-detail` 的结果为对象数组，明细位于第一项的 `data_details`，调用方应完整保存嵌套 JSON。
 
 通过 `knowledge-collection` 归档时，统计 JSON 可作为会话 `raw/` 下的原始证据；正式物化产物仍须符合该技能的 Markdown 与 sanitized 目录契约。统计数据不属于公众号文章全文，不能交给公众号下载 materializer 或标记为 `full-text`。完整归档流程还需要上游提供 Session Root 和合法的采集会话；这里只提供网站执行层的结构化数据。
 
@@ -154,12 +170,14 @@ bycli weixin-channels video-publish --mode submit --user-confirmed \
 
 **最新验收边界**：2026-10-19 用户重启浏览器后封面生成恢复，已通过 byCLI 绑定页面流程实际发表一条固定视频，后台列表由 18 条稳定增加到 19 条。整合后的 video-status 按精确管理端 ID 读到该作品累计数据。历史列表、趋势、来源和留存此前已通过；新作品结算后的日统计仍待验证，公开 URL 未验证。重启恢复和最终点击经绑定页面流程完成，不表示 video-publish 已支持自动跨重启恢复。详见 重启后发表及数据验收（本地实验记录，未随公开文档提供）；首次真实验收（本地实验记录，未随公开文档提供） 保留此前封面阻塞记录。
 
-发布分成两个独立步骤，必须显式 `--execute`，并一直复用同一个本地操作记录。准备阶段会选择文件、填写描述、设置 AI 标注并等待视频预览元数据；随后点击原生“保存草稿”，按成功回执 ID 从草稿箱重开核对；不会点击发表。当前不自动选择封面、声明原创、接受协议或完成验证，页面要求这些动作时应人工检查。
+发布分成两个独立步骤，必须显式 `--execute`，并一直复用同一个本地操作记录。准备阶段会选择文件、填写描述、设置 AI 标注并等待视频预览元数据；随后点击原生“保存草稿”，按成功回执 ID 从草稿箱重开核对；不会点击发表。准备时可用 `--cover` 指定分享卡片横封面（4:3），用 `--vertical-cover` 指定个人主页竖封面（3:4）；各自接受本地 PNG/JPEG，未指定的一项保留平台默认封面。声明原创、接受协议或完成验证仍需按页面要求人工检查。
 
 ```bash
 # 父目录须先存在；准备后保留原标签页，核对视频、描述、封面和 AI 标注
 bycli weixin-channels video-publish ./video.mp4 \
   --description '完整视频描述' --ai-generated yes \
+  --cover ./horizontal-cover.jpg \
+  --vertical-cover ./vertical-cover.jpg \
   --operation ./channels-operation.json --execute \
   --keep-tab true --window foreground -f json
 
@@ -195,6 +213,10 @@ bycli weixin-channels video-status --operation ./channels-operation.json \
 bycli weixin-channels video-status --operation ./channels-operation.json \
   --id '<完整 objectId>' --days 30 --limit 100 -f json
 ```
+
+`--cover` 和 `--vertical-cover` 仅用于新操作的 `prepare`，可独立传入两张图片，也可只指定其中一项；未指定的卡片不上传或改动。传入时先保存并重开原始草稿，再分别通过原生“编辑分享卡片”“编辑个人主页卡片”上传对应图片并确认；裁剪方式沿用平台默认值。更新只保存回同一个精确草稿 ID，随后再次重开核对已配置的封面资源。每张源图片的 SHA-256 写入操作记录，上传前源文件变化会拒绝继续；提交前核对完整资源身份，签名 token 更新不作为换图。上传或确认未知时保留原页，不自动重传。`resume`、`retry-upload` 沿用记录中的封面，不能临时传入另一张图片。
+
+2026-10-20 真实网页验收：两张不同的本地图片已分别设置为横、竖封面，保存回同一个草稿 ID，并由 `resume` 重开核对两项资源身份，结果 `prepared`、`custom_cover.saved=true`、`submitted=false`。横封面确认曾中断，经检查现场恢复后完成；本轮未公开发布，也未将此结果当作全新 `prepare` 无中断完成的证明。
 
 `--ai-generated yes/no` 必须按实际填写。`video-publish --timeout` 接受 1–1800 秒，默认 180；`prepare` 为默认模式，`submit` 不重新上传。提交时必须有匹配的页面身份、操作标记、完整描述、视频元数据及 AI 标注；刷新或换页后拒绝提交。
 
