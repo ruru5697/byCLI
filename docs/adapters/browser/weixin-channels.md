@@ -170,12 +170,14 @@ bycli weixin-channels video-publish --mode submit --user-confirmed \
 
 **最新验收边界**：2026-10-19 用户重启浏览器后封面生成恢复，已通过 byCLI 绑定页面流程实际发表一条固定视频，后台列表由 18 条稳定增加到 19 条。整合后的 video-status 按精确管理端 ID 读到该作品累计数据。历史列表、趋势、来源和留存此前已通过；新作品结算后的日统计仍待验证，公开 URL 未验证。重启恢复和最终点击经绑定页面流程完成，不表示 video-publish 已支持自动跨重启恢复。详见 [重启后发表及数据验收](../../research/connector-integration-2026-10-19/weixin-channels-restart-publication-validation-2026-10-19.md)；[首次真实验收](../../research/connector-integration-2026-10-19/weixin-channels-live-validation-2026-10-19.md) 保留此前封面阻塞记录。
 
-发布分成两个独立步骤，必须显式 `--execute`，并一直复用同一个本地操作记录。准备阶段会选择文件、填写描述、设置 AI 标注并等待视频预览元数据；随后点击原生“保存草稿”，按成功回执 ID 从草稿箱重开核对；不会点击发表。当前不自动选择封面、声明原创、接受协议或完成验证，页面要求这些动作时应人工检查。
+发布分成两个独立步骤，必须显式 `--execute`，并一直复用同一个本地操作记录。准备阶段会选择文件、填写描述、设置 AI 标注并等待视频预览元数据；随后点击原生“保存草稿”，按成功回执 ID 从草稿箱重开核对；不会点击发表。准备时可用 `--cover` 指定分享卡片横封面（4:3），用 `--vertical-cover` 指定个人主页竖封面（3:4）；各自接受本地 PNG/JPEG，未指定的一项保留平台默认封面。声明原创、接受协议或完成验证仍需按页面要求人工检查。
 
 ```bash
 # 父目录须先存在；准备后保留原标签页，核对视频、描述、封面和 AI 标注
 bycli weixin-channels video-publish ./video.mp4 \
   --description '完整视频描述' --ai-generated yes \
+  --cover ./horizontal-cover.jpg \
+  --vertical-cover ./vertical-cover.jpg \
   --operation ./channels-operation.json --execute \
   --keep-tab true --window foreground -f json
 
@@ -211,6 +213,10 @@ bycli weixin-channels video-status --operation ./channels-operation.json \
 bycli weixin-channels video-status --operation ./channels-operation.json \
   --id '<完整 objectId>' --days 30 --limit 100 -f json
 ```
+
+`--cover` 和 `--vertical-cover` 仅用于新操作的 `prepare`，可独立传入两张图片，也可只指定其中一项；未指定的卡片不上传或改动。传入时先保存并重开原始草稿，再分别通过原生“编辑分享卡片”“编辑个人主页卡片”上传对应图片并确认；裁剪方式沿用平台默认值。更新只保存回同一个精确草稿 ID，随后再次重开核对已配置的封面资源。每张源图片的 SHA-256 写入操作记录，上传前源文件变化会拒绝继续；提交前核对完整资源身份，签名 token 更新不作为换图。上传或确认未知时保留原页，不自动重传。`resume`、`retry-upload` 沿用记录中的封面，不能临时传入另一张图片。
+
+2026-10-20 真实网页验收：两张不同的本地图片已分别设置为横、竖封面，保存回同一个草稿 ID，并由 `resume` 重开核对两项资源身份，结果 `prepared`、`custom_cover.saved=true`、`submitted=false`。横封面确认曾中断，经检查现场恢复后完成；本轮未公开发布，也未将此结果当作全新 `prepare` 无中断完成的证明。
 
 `--ai-generated yes/no` 必须按实际填写。`video-publish --timeout` 接受 1–1800 秒，默认 180；`prepare` 为默认模式，`submit` 不重新上传。提交时必须有匹配的页面身份、操作标记、完整描述、视频元数据及 AI 标注；刷新或换页后拒绝提交。
 
