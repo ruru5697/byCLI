@@ -16,6 +16,7 @@ import { type CliCommand, fullName, getRegistry, strategyLabel } from './registr
 import { serializeCommand, formatArgSummary } from './serialization.js';
 import { render as renderOutput } from './output.js';
 import { PKG_VERSION } from './version.js';
+import { ejectAdapter } from './adapter-eject.js';
 import { printCompletionScript } from './completion.js';
 import { loadExternalClis, executeExternalCli, installExternalCli, registerExternalCli, isBinaryInstalled, formatExternalCliLabel } from './external.js';
 import { registerAllCommands } from './commanderAdapter.js';
@@ -840,7 +841,8 @@ Examples:
         const contextId = getBrowserContextId(command);
         await bridge.connect({ timeout: 30, session, surface: 'browser', ...(contextId && { contextId }) });
         const data = await bindTab(session, { ...(contextId && { contextId }) });
-        saveBrowserTargetState(undefined, getBrowserScope(session, contextId));
+        const boundPage = data && typeof data === 'object' && 'page' in data && typeof data.page === 'string' ? data.page : undefined;
+        saveBrowserTargetState(boundPage, getBrowserScope(session, contextId));
         console.log(JSON.stringify({ session, ...((data && typeof data === 'object') ? data as Record<string, unknown> : { data }) }, null, 2));
       } catch (err) {
         if (err instanceof BrowserCommandError && err.code) {
@@ -2782,11 +2784,29 @@ cli({
     .command('doctor')
     .description('Diagnose bycli browser bridge connectivity')
     .option('-v, --verbose', 'Debug output')
+    .option('--json', 'Return the structured diagnostic report')
+    .option('--diagnostics <directory>', 'Save a private diagnostic report without cookies, page contents or media')
     .action(async (opts) => {
       applyVerbose(opts);
       const { runBrowserDoctor, renderBrowserDoctorReport } = await import('./doctor.js');
       const report = await runBrowserDoctor({ cliVersion: PKG_VERSION });
-      console.log(renderBrowserDoctorReport(report));
+      if (opts.diagnostics) {
+        const directory = path.resolve(opts.diagnostics);
+        fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+        fs.writeFileSync(path.join(directory, 'bridge-diagnostics.json'), JSON.stringify({
+          schemaVersion: 1, capturedAt: new Date().toISOString(),
+          cliVersion: report.cliVersion, daemonVersion: report.daemonVersion, daemonPort: report.daemonPort,
+          extensionVersion: report.extensionVersion, extensionBuildId: report.extensionBuildId,
+          expectedExtensionBuildId: report.expectedExtensionBuildId,
+          extensionBuildVerified: report.extensionBuildVerified,
+          installedExtensionVersion: report.installedExtensionVersion,
+          installedExtensionDirectory: report.installedExtensionDirectory,
+          extensionCapabilities: report.extensionCapabilities, uploadReady: report.uploadReady,
+          daemonRunning: report.daemonRunning, extensionConnected: report.extensionConnected,
+          profiles: report.profiles?.map(({ contextId, extensionVersion, extensionBuildId, extensionCapabilities }) => ({ contextId, extensionVersion, extensionBuildId, extensionCapabilities })),
+        }, null, 2), { mode: 0o600, flag: 'wx' });
+      }
+      console.log(opts.json ? JSON.stringify(report, null, 2) : renderBrowserDoctorReport(report));
     });
 
   program
@@ -3055,10 +3075,10 @@ cli({
         return;
       } catch { /* good, doesn't exist yet */ }
 
-      fs.cpSync(builtinSiteDir, userSiteDir, { recursive: true });
+      ejectAdapter(BUILTIN_CLIS, userClisDir, site, PKG_VERSION);
       console.log(`✅ Ejected "${site}" to ${userSiteDir}/`);
       console.log('You can now edit the adapter files. Changes take effect immediately.');
-      console.log('Note: Official updates to this adapter will overwrite your changes.');
+      console.log('Shared dependencies are vendored inside this override. Official updates do not replace it; reset to restore the installed baseline.');
     });
 
   adapterCmd

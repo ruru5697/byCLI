@@ -288,7 +288,7 @@ function isDebuggableUrl(url?: string): boolean {
   return url.startsWith('http://') || url.startsWith('https://') || url === 'about:blank' || url.startsWith('data:');
 }
 
-export async function ensureAttached(tabId: number, aggressiveRetry: boolean = false): Promise<void> {
+export async function ensureAttached(tabId: number, aggressiveRetry: boolean = false, dialogSafeProbe: boolean = false): Promise<void> {
   // Verify the tab URL is debuggable before attempting attach
   try {
     const tab = await chrome.tabs.get(tabId);
@@ -305,11 +305,13 @@ export async function ensureAttached(tabId: number, aggressiveRetry: boolean = f
   }
 
   if (attached.has(tabId)) {
+    // Even metadata RPCs can wait behind a modal. onDetach invalidates this
+    // cache; dialog handling must reach Page.handleJavaScriptDialog first.
+    if (dialogSafeProbe) return;
     // Verify the debugger is still actually attached by sending a harmless command
     try {
-      await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
-        expression: '1', returnByValue: true,
-      });
+      await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', { expression: '1', returnByValue: true });
+      if (!consoleCaptures.has(tabId)) await initializeAttachedRuntime(tabId);
       return; // Still attached and working
     } catch {
       // Stale cache entry — need to re-attach
@@ -371,7 +373,11 @@ export async function ensureAttached(tabId: number, aggressiveRetry: boolean = f
     throw new Error(`attach failed: ${lastError}${hint}`);
   }
   attached.add(tabId);
+  if (dialogSafeProbe) return; // Arm/handle the dialog before renderer setup.
+  await initializeAttachedRuntime(tabId);
+}
 
+async function initializeAttachedRuntime(tabId: number): Promise<void> {
   // Runtime.enable replays existing messages synchronously; state and listeners must exist first.
   const consoleState = { id: crypto.randomUUID(), seq: 0, messages: [], enabled: false, error: undefined as string | undefined };
   consoleCaptures.set(tabId, consoleState);
@@ -512,44 +518,50 @@ export async function setFileInputFiles(
   files: string[],
   selector?: string,
 ): Promise<void> {
-  await ensureAttached(tabId);
+  let nodeId: number;
+  try {
+    await ensureAttached(tabId);
 
-  // Enable DOM domain (required for DOM.querySelector and DOM.setFileInputFiles)
-  await chrome.debugger.sendCommand({ tabId }, 'DOM.enable');
+    // Enable DOM domain (required for DOM.querySelector and DOM.setFileInputFiles)
+    await chrome.debugger.sendCommand({ tabId }, 'DOM.enable');
 
-  // Get the document root
-  type UploadNode = { nodeId: number; children?: UploadNode[]; shadowRoots?: UploadNode[]; shadowRootType?: string };
-  const doc = await chrome.debugger.sendCommand({ tabId }, 'DOM.getDocument', { depth: -1, pierce: true }) as {
-    root: UploadNode;
-  };
+    // Get the document root
+    type UploadNode = { nodeId: number; children?: UploadNode[]; shadowRoots?: UploadNode[]; shadowRootType?: string };
+    const doc = await chrome.debugger.sendCommand({ tabId }, 'DOM.getDocument', { depth: -1, pierce: true }) as {
+      root: UploadNode;
+    };
 
-  // Find the file input element
-  const query = selector || 'input[type="file"]';
-  const roots = [doc.root.nodeId];
-  function collect(node: UploadNode): void {
-    for (const root of node.shadowRoots || []) {
-      if (root.shadowRootType !== 'open') continue;
-      roots.push(root.nodeId);
-      collect(root);
+    // Find the file input element
+    const query = selector || 'input[type="file"]';
+    const roots = [doc.root.nodeId];
+    function collect(node: UploadNode): void {
+      for (const root of node.shadowRoots || []) {
+        if (root.shadowRootType !== 'open') continue;
+        roots.push(root.nodeId);
+        collect(root);
+      }
+      for (const child of node.children || []) collect(child);
     }
-    for (const child of node.children || []) collect(child);
-  }
-  collect(doc.root);
-  const matches = new Set<number>();
-  for (const nodeId of roots) {
-    const result = await chrome.debugger.sendCommand({ tabId }, 'DOM.querySelectorAll', {
-      nodeId, selector: query,
-    }) as { nodeIds: number[] };
-    for (const id of result.nodeIds || []) matches.add(id);
-  }
-  if (matches.size !== 1) throw new Error(`File input selector must match exactly one element; got ${matches.size}`);
-  const nodeId = [...matches][0];
-  const attributes = await chrome.debugger.sendCommand({ tabId }, 'DOM.getAttributes', { nodeId }) as { attributes: string[] };
-  const attrs = new Map<string, string>();
-  for (let i = 0; i < attributes.attributes.length; i += 2) attrs.set(attributes.attributes[i], attributes.attributes[i + 1]);
-  const description = await chrome.debugger.sendCommand({ tabId }, 'DOM.describeNode', { nodeId }) as { node: { localName: string } };
-  if (description.node.localName !== 'input' || attrs.get('type')?.toLowerCase() !== 'file') {
-    throw new Error('Upload target is not an input[type=file]');
+    collect(doc.root);
+    const matches = new Set<number>();
+    for (const nodeId of roots) {
+      const result = await chrome.debugger.sendCommand({ tabId }, 'DOM.querySelectorAll', {
+        nodeId, selector: query,
+      }) as { nodeIds: number[] };
+      for (const id of result.nodeIds || []) matches.add(id);
+    }
+    if (matches.size !== 1) throw new Error(`File input selector must match exactly one element; got ${matches.size}`);
+    nodeId = [...matches][0];
+    const attributes = await chrome.debugger.sendCommand({ tabId }, 'DOM.getAttributes', { nodeId }) as { attributes: string[] };
+    const attrs = new Map<string, string>();
+    for (let i = 0; i < attributes.attributes.length; i += 2) attrs.set(attributes.attributes[i], attributes.attributes[i + 1]);
+    const description = await chrome.debugger.sendCommand({ tabId }, 'DOM.describeNode', { nodeId }) as { node: { localName: string } };
+    if (description.node.localName !== 'input' || attrs.get('type')?.toLowerCase() !== 'file') {
+      throw new Error('Upload target is not an input[type=file]');
+    }
+
+  } catch (error) {
+    throw Object.assign(new Error(error instanceof Error ? error.message : String(error)), { code: 'upload_not_started' });
   }
 
   // Set files directly via CDP — Chrome reads from local filesystem

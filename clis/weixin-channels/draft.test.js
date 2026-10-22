@@ -31,6 +31,10 @@ describe('Channels native platform draft identity', () => {
     card.__vue__ = { $props: { post: { objectId: 'export/exact_draft', desc: { description: 'saved text' } } } };
     expect(dom.window.eval(savedDraftScript('export/exact_draft', 'saved text'))).toMatchObject({ matches: 1, id: 'export/exact_draft' });
     expect(dom.window.eval(savedDraftScript('export/other', 'saved text'))).toMatchObject({ matches: 0 });
+    card.__vue__.$props.post.desc.description = 'saved text\n';
+    expect(dom.window.eval(savedDraftScript('export/exact_draft', 'saved text'))).toMatchObject({ matches: 1 });
+    card.__vue__.$props.post.desc.description = 'saved text ';
+    expect(dom.window.eval(savedDraftScript('export/exact_draft', 'saved text'))).toMatchObject({ error: 'draft_content_changed' });
     expect(dom.window.eval(savedDraftScript('export/exact_draft', 'changed'))).toMatchObject({ error: 'draft_content_changed' });
     dom.window.close();
   });

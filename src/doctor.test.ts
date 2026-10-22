@@ -26,6 +26,8 @@ vi.mock('./adapter-shadow.js', async () => {
   };
 });
 
+vi.mock('./browser/extension-build.js', () => ({ installedExtensionBuild: () => ({ directory: '/local/bycli/extension', valid: true, version: '2.1.28', buildId: 'a'.repeat(64) }) }));
+
 import { renderBrowserDoctorReport, runBrowserDoctor } from './doctor.js';
 
 describe('doctor report rendering', () => {
@@ -42,6 +44,46 @@ describe('doctor report rendering', () => {
     mockClose.mockResolvedValue(undefined);
   });
 
+  it('detects stale executing code even when its manifest reports the expected version', async () => {
+    mockGetDaemonHealth.mockResolvedValue({ state: 'ready', status: { extensionVersion: '2.1.28', extensionBuildId: 'b'.repeat(64) } });
+    const report = await runBrowserDoctor();
+    expect(report.extensionBuildVerified).toBe(false);
+    expect(report.issues.join(' ')).toContain('runtime build mismatch');
+    mockGetDaemonHealth.mockResolvedValue({ state: 'ready', status: { extensionVersion: '2.1.28', extensionBuildId: 'a'.repeat(64) } });
+    expect((await runBrowserDoctor()).extensionBuildVerified).toBe(true);
+  });
+  it('distinguishes an unreported runtime from a proven hash mismatch and identifies the local extension', async () => {
+    mockGetDaemonHealth.mockResolvedValue({ state: 'ready', status: { extensionVersion: '2.1.25', extensionCapabilities: [] } });
+    const report = await runBrowserDoctor();
+    expect(report).toMatchObject({ extensionBuildVerified: false, uploadReady: false, installedExtensionVersion: '2.1.28', installedExtensionDirectory: '/local/bycli/extension' });
+    expect(report.issues.join(' ')).toContain('runtime build unverified');
+    expect(report.issues.join(' ')).not.toContain('runtime build mismatch');
+    const rendered = renderBrowserDoctorReport(report);
+    expect(rendered).toContain('File upload: not ready');
+    expect(rendered).toContain('v2.1.28 at /local/bycli/extension');
+    expect(rendered).toContain("not the browser's verified load path");
+  });
+  it.each([[], undefined])('does not infer upload readiness from generic connectivity or fingerprints (%j)', async capabilities => {
+    mockGetDaemonHealth.mockResolvedValue({ state: 'ready', status: { extensionVersion: '2.1.28', extensionBuildId: 'a'.repeat(64), extensionCapabilities: capabilities } });
+    const report = await runBrowserDoctor();
+    expect(report.extensionBuildVerified).toBe(true);
+    expect(report.uploadReady).toBe(false);
+    expect(report.issues.join(' ')).toContain('file-input-shadow-v1');
+  });
+  it('reports upload protocol readiness separately from platform acceptance', async () => {
+    mockGetDaemonHealth.mockResolvedValue({ state: 'ready', status: { extensionVersion: '2.1.28', extensionBuildId: 'a'.repeat(64), extensionCapabilities: ['file-input-shadow-v1'] } });
+    const report = await runBrowserDoctor();
+    expect(report.uploadReady).toBe(true);
+    expect(renderBrowserDoctorReport(report)).toContain('platform acceptance not tested');
+    expect(report.issues.join(' ')).not.toContain('File upload not ready');
+  });
+  it('reports the selected daemon port instead of the default in isolated or custom-port installations', async () => {
+    mockGetDaemonHealth.mockResolvedValue({ state: 'ready', status: { port: 23019 } });
+    const report = await runBrowserDoctor();
+    expect(report.daemonPort).toBe(23019);
+    expect(renderBrowserDoctorReport(report)).toContain('running on port 23019');
+    expect(renderBrowserDoctorReport(report)).not.toContain('running on port 19825');
+  });
   it('renders OK-style report when daemon and extension connected', () => {
     const text = strip(renderBrowserDoctorReport({
       cliVersion: '1.7.9',

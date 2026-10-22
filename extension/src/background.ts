@@ -6,8 +6,11 @@
  */
 
 declare const __BYCLI_COMPAT_RANGE__: string;
+declare const __BYCLI_BUILD_ID__: string;
 
-const EXTENSION_CAPABILITIES = ['focus-window-v1', 'ima-reader-v1', 'console-capture-v1'] as const;
+const RUNTIME_BUILD_ID = typeof __BYCLI_BUILD_ID__ === 'string' ? __BYCLI_BUILD_ID__ : 'development';
+Object.defineProperty(globalThis, '__BYCLI_RUNTIME_BUILD_ID__', { value: RUNTIME_BUILD_ID, configurable: true });
+const EXTENSION_CAPABILITIES = ['focus-window-v1', 'ima-reader-v1', 'console-capture-v1', 'file-input-shadow-v1', 'dialog-policy-v1'] as const;
 
 import type { Command, Result } from './protocol';
 import { DAEMON_HOST, DAEMON_PORT, DAEMON_WS_URL, DAEMON_PING_URL, WS_RECONNECT_BASE_DELAY, WS_RECONNECT_MAX_DELAY } from './protocol';
@@ -15,6 +18,7 @@ import * as executor from './cdp';
 import * as identity from './identity';
 import { checkUrlSyntax } from './url-policy';
 import { constrainOwnedWindowBounds, createOwnedWindowBounds, selectWindowWorkArea } from './window-geometry';
+import { startDialogPolicy, stopDialogPolicy, assertDialogPolicy, hasDialogPolicy, registerDialogTracking, clearDialogPolicies } from './dialog-policy';
 
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -122,8 +126,9 @@ async function connectAttempt(): Promise<void> {
 
   try {
     const res = await fetch(DAEMON_PING_URL, { signal: AbortSignal.timeout(1000) });
-    if (!res.ok) return; // unexpected response — not our daemon
+    if (!res.ok) { scheduleReconnect(); return; }
   } catch {
+    scheduleReconnect();
     return; // daemon not running — skip WebSocket to avoid console noise
   }
   if (isDaemonSocketActive()) return;
@@ -153,6 +158,7 @@ async function connectAttempt(): Promise<void> {
       type: 'hello',
       contextId: currentContextId,
       version: chrome.runtime.getManifest().version,
+      buildId: RUNTIME_BUILD_ID,
       compatRange: __BYCLI_COMPAT_RANGE__,
       capabilities: EXTENSION_CAPABILITIES,
     });
@@ -181,6 +187,7 @@ async function connectAttempt(): Promise<void> {
 
   thisWs.onclose = () => {
     if (ws !== thisWs) return;
+    clearDialogPolicies();
     console.log('[bycli] Disconnected from daemon');
     ws = null;
     scheduleReconnect();
@@ -192,11 +199,11 @@ async function connectAttempt(): Promise<void> {
 }
 
 /**
- * After MAX_EAGER_ATTEMPTS (reaching 60s backoff), stop scheduling reconnects.
+ * After MAX_EAGER_ATTEMPTS, stop scheduling eager reconnects.
  * The keepalive alarm (~24s) will still call connect() periodically, but at a
  * much lower frequency — reducing console noise when the daemon is not running.
  */
-const MAX_EAGER_ATTEMPTS = 6; // 2s, 4s, 8s, 16s, 32s, 60s — then stop
+const MAX_EAGER_ATTEMPTS = 6; // 2s, 4s, then 5s capped backoff
 
 function scheduleReconnect(): void {
   if (reconnectTimer) return;
@@ -1111,6 +1118,7 @@ function initialize(): void {
   initialized = true;
   chrome.alarms.create('keepalive', { periodInMinutes: 0.4 }); // ~24 seconds
   executor.registerListeners();
+  registerDialogTracking();
   try {
     const registerFrameTracking = (executor as { registerFrameTracking?: () => void }).registerFrameTracking;
     registerFrameTracking?.();
@@ -1166,6 +1174,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         reconnecting: reconnectTimer !== null,
         contextId,
         extensionVersion,
+        extensionBuildId: RUNTIME_BUILD_ID,
         daemonVersion,
       });
     })();
@@ -1213,7 +1222,19 @@ async function handleCommand(cmd: Command): Promise<Result> {
   // Reset idle timer on every command (window stays alive while active)
   resetWindowIdleTimer(leaseKey);
   try {
+    if (cmd.dialogToken && cmd.action !== 'dialog-policy') {
+      assertDialogPolicy(cmd.dialogToken, leaseKey, await resolveCommandTabId(cmd));
+    }
     switch (cmd.action) {
+      case 'dialog-policy': {
+        if (!cmd.dialogToken) throw new Error('Dialog policy token is required');
+        if (cmd.op === 'stop') return { id: cmd.id, ok: true, data: stopDialogPolicy(cmd.dialogToken, leaseKey) };
+        if (cmd.op !== 'start') throw new Error('Invalid dialog policy operation');
+        const tabId = await resolveTabId(await resolveCommandTabId(cmd), leaseKey);
+        await executor.ensureAttached(tabId, false, true);
+        await startDialogPolicy(cmd.dialogToken, leaseKey, tabId, cmd.dialogOrigin ?? '', cmd.timeoutMs ?? 180000);
+        return pageScopedResult(cmd.id, tabId, { token: cmd.dialogToken });
+      }
       case 'exec':
         return await handleExec(cmd, leaseKey);
       case 'navigate':
@@ -1626,7 +1647,7 @@ async function handleNavigateUnlocked(cmd: Command, leaseKey: string): Promise<R
   // state and causes the next Runtime.evaluate to fail with
   // "Inspected target navigated or closed". Resetting here forces a clean
   // re-attach after navigation when capture is not active.
-  if (!executor.hasActiveNetworkCapture(tabId)) {
+  if (!executor.hasActiveNetworkCapture(tabId) && !hasDialogPolicy(tabId)) {
     await executor.detach(tabId);
   }
 
@@ -2065,7 +2086,7 @@ async function handleCdp(cmd: Command, leaseKey: string): Promise<Result> {
   const tabId = await resolveTabId(cmdTabId, leaseKey);
   try {
     const aggressive = getSurfaceFromKey(leaseKey) === 'browser';
-    await executor.ensureAttached(tabId, aggressive);
+    await executor.ensureAttached(tabId, aggressive, cmd.cdpMethod === 'Page.handleJavaScriptDialog');
     const params = cmd.cdpParams ?? {};
     const routeFrameId = typeof params.frameId === 'string' && params.sessionId === 'target'
       ? params.frameId
@@ -2106,7 +2127,7 @@ async function handleSetFileInput(cmd: Command, leaseKey: string): Promise<Resul
     await executor.setFileInputFiles(tabId, cmd.files, cmd.selector);
     return pageScopedResult(cmd.id, tabId, { count: cmd.files.length });
   } catch (err) {
-    return { id: cmd.id, ok: false, error: err instanceof Error ? err.message : String(err) };
+    return { id: cmd.id, ok: false, error: err instanceof Error ? err.message : String(err), errorCode: errorCodeOf(err) };
   }
 }
 
@@ -2385,9 +2406,6 @@ async function handleBind(cmd: Command, leaseKey: string): Promise<Result> {
 
 async function handleBindUnlocked(cmd: Command, leaseKey: string): Promise<Result> {
   const existing = automationSessions.get(leaseKey);
-  if (existing?.owned) {
-    await releaseLeaseUnlocked(leaseKey, 'rebind');
-  }
   const activeTabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   const fallbackTabs = await chrome.tabs.query({ lastFocusedWindow: true });
   const boundTab = activeTabs.find((tab) => isDebuggableUrl(tab.url))
@@ -2402,6 +2420,11 @@ async function handleBindUnlocked(cmd: Command, leaseKey: string): Promise<Resul
     };
   }
 
+  // Select before release, preserving the identity of an owned editor.
+  if (existing?.owned && boundTab.windowId === existing.windowId) {
+    return pageScopedResult(cmd.id, boundTab.id, { url: boundTab.url, title: boundTab.title, session: getSessionFromKey(leaseKey) });
+  }
+  if (existing?.owned) await releaseLeaseUnlocked(leaseKey, 'rebind');
   const current = automationSessions.get(leaseKey);
   if (current && !current.owned && current.preferredTabId !== null && current.preferredTabId !== boundTab.id) {
     await executor.detach(current.preferredTabId).catch(() => {});

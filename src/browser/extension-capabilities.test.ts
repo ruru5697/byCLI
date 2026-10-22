@@ -10,6 +10,12 @@ import {
 } from './extension-capabilities.js';
 
 describe('extension capability negotiation', () => {
+  it('gates dialog policies and keeps native-upload requirements under a policy', () => {
+    expect(missingRequiredExtensionCapability({ action: 'dialog-policy' }, [])).toBe('dialog-policy-v1');
+    expect(missingRequiredExtensionCapability({ action: 'exec', dialogToken: 't' }, [])).toBe('dialog-policy-v1');
+    expect(missingRequiredExtensionCapability({ action: 'set-file-input', dialogToken: 't' }, ['dialog-policy-v1'])).toBe('file-input-shadow-v1');
+    expect(missingRequiredExtensionCapability({ action: 'set-file-input', dialogToken: 't' }, ['dialog-policy-v1', 'file-input-shadow-v1'])).toBeUndefined();
+  });
   it('gates console snapshots without changing existing actions', () => {
     expect(requiredExtensionCapability({ action: 'console-messages' })).toBe('console-capture-v1');
     expect(missingRequiredExtensionCapability({ action: 'console-messages' }, [])).toBe('console-capture-v1');

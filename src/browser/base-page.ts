@@ -68,6 +68,7 @@ export interface UploadFilesResult extends ResolveSuccess {
   uploaded: boolean;
   files: number;
   file_names: string[];
+  file_list_verified: boolean;
   target: string;
   multiple?: boolean;
   accept?: string;
@@ -757,19 +758,34 @@ export abstract class BasePage implements IPage {
       await setFileInput.call(this, files, selector);
       return;
     }
-
     const cdp = (this as IPage).cdp;
-    if (typeof cdp !== 'function') {
-      throw new Error('File upload requires setFileInput or CDP support from the active browser backend.');
+    let target: number;
+    try {
+      if (typeof cdp !== 'function') throw new Error('File upload requires native file input support.');
+      await cdp.call(this, 'DOM.enable', {});
+      type Node = { nodeId: number; children?: Node[]; shadowRoots?: Node[]; shadowRootType?: string };
+      const doc = await cdp.call(this, 'DOM.getDocument', { depth: -1, pierce: true }) as { root: Node };
+      const roots: number[] = [];
+      const visit = (node: Node) => {
+        for (const root of node.shadowRoots ?? []) if (root.shadowRootType === 'open') { roots.push(root.nodeId); visit(root); }
+        for (const child of node.children ?? []) visit(child);
+      };
+      roots.push(doc.root.nodeId); visit(doc.root);
+      const matches = new Set<number>();
+      for (const nodeId of roots) {
+        const found = await cdp.call(this, 'DOM.querySelectorAll', { nodeId, selector }) as { nodeIds: number[] };
+        for (const id of found.nodeIds ?? []) matches.add(id);
+      }
+      if (matches.size !== 1) throw new Error(`File input selector must match exactly one element; got ${matches.size}`);
+      target = [...matches][0];
+      const node = await cdp.call(this, 'DOM.describeNode', { nodeId: target }) as { node: { localName: string; attributes: string[] } };
+      const attrs = node.node.attributes;
+      const typeIndex = attrs.indexOf('type');
+      if (node.node.localName !== 'input' || typeIndex < 0 || attrs[typeIndex + 1]?.toLowerCase() !== 'file') throw new Error('Upload target is not an input[type=file]');
+    } catch (error) {
+      throw Object.assign(new Error(error instanceof Error ? error.message : String(error)), { code: 'upload_not_started' });
     }
-    await cdp.call(this, 'DOM.enable', {}).catch(() => undefined);
-    const doc = await cdp.call(this, 'DOM.getDocument', {}) as { root?: { nodeId?: unknown } } | null;
-    const rootNodeId = doc?.root?.nodeId;
-    if (typeof rootNodeId !== 'number') throw new Error('DOM.getDocument returned no root node.');
-    const query = await cdp.call(this, 'DOM.querySelector', { nodeId: rootNodeId, selector }) as { nodeId?: unknown } | null;
-    const nodeId = query?.nodeId;
-    if (typeof nodeId !== 'number' || nodeId <= 0) throw new Error(`No element found matching selector: ${selector}`);
-    await cdp.call(this, 'DOM.setFileInputFiles', { files, nodeId });
+    await cdp!.call(this, 'DOM.setFileInputFiles', { files, nodeId: target });
   }
 
   async uploadFiles(ref: string, files: string[], opts: ResolveOptions = {}): Promise<UploadFilesResult> {
@@ -792,6 +808,7 @@ export abstract class BasePage implements IPage {
         (() => {
           const el = window.__resolved;
           if (!el || el.nodeType !== 1) return { ok: false, reason: 'not_file_input' };
+          if (!el.isConnected) return { ok: false, reason: 'stale_ref' };
           const tag = el.tagName.toLowerCase();
           const type = (el.getAttribute('type') || '').toLowerCase();
           if (tag !== 'input' || type !== 'file') return { ok: false, reason: 'not_file_input', tag, type };
@@ -806,7 +823,7 @@ export abstract class BasePage implements IPage {
       marked = info?.ok === true;
       if (!marked) {
         throw new TargetError({
-          code: 'not_file_input',
+          code: info?.reason === 'stale_ref' ? 'stale_ref' : 'not_file_input',
           message: `Target "${ref}" is not an input[type=file].`,
           hint: 'Use `bycli browser find --css "input[type=file]"` or inspect `compound` output from browser state/find.',
         });
@@ -819,13 +836,24 @@ export abstract class BasePage implements IPage {
         });
       }
 
-      await this.setFileInputBySelector(files, selector);
+      try {
+        await this.setFileInputBySelector(files, selector);
+      } catch (error) {
+        const code = (error as { code?: string })?.code;
+        const none = code === 'upload_not_started' || code === 'extension_capability_missing';
+        throw new CliError(none ? 'UPLOAD_NOT_STARTED' : 'UPLOAD_RESULT_UNKNOWN',
+          error instanceof Error ? error.message : String(error),
+          none ? code === 'extension_capability_missing'
+            ? 'No files were injected. Run bycli doctor to locate the bundled extension and check the connected runtime. Reload that extension, verify upload readiness, then explicitly retry the same operation.'
+            : 'No files were injected. Inspect the current input and extension before retrying.'
+            : 'Injection may have happened. Inspect platform state; do not upload again.');
+      }
       const verification = await this.evaluate(`
         (() => {
           const el = window.__resolved;
           const names = [];
           try {
-            if (el && el.files) {
+            if (el?.isConnected && el.files) {
               for (let i = 0; i < el.files.length; i++) names.push(el.files[i].name || '');
             }
           } catch (_) {}
@@ -836,11 +864,15 @@ export abstract class BasePage implements IPage {
         ? verification.map((value) => String(value))
         : [];
 
+      // The native command acknowledged injection. A change handler may consume
+      // or replace the input immediately; FileList is an observation, not a
+      // durable receipt. Adapters must verify the platform's resulting state.
       return {
         ...resolved,
         uploaded: true,
-        files: fileNames.length || files.length,
+        files: files.length,
         file_names: fileNames,
+        file_list_verified: fileNames.length === files.length,
         target: ref,
         multiple: !!info?.multiple,
         ...(info?.accept ? { accept: info.accept } : {}),

@@ -27,7 +27,9 @@ function generateId(): string {
 
 export interface DaemonCommand {
   id: string;
-  action: 'exec' | 'navigate' | 'tabs' | 'cookies' | 'screenshot' | 'close-window' | 'set-file-input' | 'insert-text' | 'bind' | 'network-capture-start' | 'network-capture-read' | 'console-messages' | 'ima-auth-start' | 'ima-auth-read' | 'ima-reader-request' | 'ima-media-request' | 'ima-auth-release' | 'wait-download' | 'cdp' | 'frames';
+  action: 'exec' | 'navigate' | 'tabs' | 'cookies' | 'screenshot' | 'close-window' | 'set-file-input' | 'insert-text' | 'bind' | 'network-capture-start' | 'network-capture-read' | 'console-messages' | 'dialog-policy' | 'ima-auth-start' | 'ima-auth-read' | 'ima-reader-request' | 'ima-media-request' | 'ima-auth-release' | 'wait-download' | 'cdp' | 'frames';
+  dialogToken?: string;
+  dialogOrigin?: string;
   level?: string;
   /** Target page identity (targetId). Cross-layer contract with the extension. */
   page?: string;
@@ -101,6 +103,7 @@ export interface DaemonStatus {
   daemonVersion?: string;
   extensionConnected: boolean;
   extensionVersion?: string;
+  extensionBuildId?: string;
   extensionCompatRange?: string;
   extensionCapabilities?: string[];
   contextId?: string;
@@ -117,6 +120,7 @@ export interface BrowserProfileStatus {
   contextId: string;
   extensionConnected: boolean;
   extensionVersion?: string;
+  extensionBuildId?: string;
   extensionCompatRange?: string;
   extensionCapabilities?: string[];
   pending: number;
@@ -318,8 +322,9 @@ export async function requestDaemonShutdown(opts?: { timeout?: number }): Promis
 async function sendCommandRaw(
   action: DaemonCommand['action'],
   params: Omit<DaemonCommand, 'id' | 'action'>,
+  once = false,
 ): Promise<DaemonResult> {
-  const maxRetries = 4;
+  const maxRetries = once || action === 'set-file-input' ? 1 : 4;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     const id = generateId();
@@ -377,6 +382,14 @@ async function sendCommandRaw(
   throw new Error('sendCommand: max retries exhausted');
 }
 
+/** A mutation with a lost response must be reconciled, never dispatched twice. */
+export async function sendCommandOnce(
+  action: DaemonCommand['action'],
+  params: Omit<DaemonCommand, 'id' | 'action'> = {},
+): Promise<unknown> {
+  return (await sendCommandRaw(action, params, true)).data;
+}
+
 /**
  * Send a command to the daemon and return the result data.
  */
@@ -401,5 +414,6 @@ export async function sendCommandFull(
 }
 
 export async function bindTab(session: string, opts: { contextId?: string } = {}): Promise<unknown> {
-  return sendCommand('bind', { session, surface: 'browser', ...opts });
+  const result = await sendCommandFull('bind', { session, surface: 'browser', ...opts });
+  return { ...(result.data && typeof result.data === 'object' ? result.data : {}), page: result.page };
 }

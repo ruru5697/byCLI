@@ -29,6 +29,11 @@ const probeDaemonStatus = (
 ).probeDaemonStatus;
 
 describe('daemon-client', () => {
+  it('never retries native file injection after a lost HTTP response', async () => {
+    vi.mocked(fetch).mockRejectedValue(new TypeError('connection reset'));
+    await expect(sendCommand('set-file-input', { files: ['/tmp/video.mp4'] })).rejects.toThrow('connection reset');
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn());
   });

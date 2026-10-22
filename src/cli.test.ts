@@ -3361,3 +3361,19 @@ describe('renderVerifyPreview', () => {
     expect(out).not.toContain('xxxxxxxxxxx'); // never 11 consecutive
   });
 });
+
+it('doctor reports unverified extension/upload capabilities without failing generic Runner health checks', async () => {
+  const doctor = await import('./doctor.js');
+  const probe = vi.spyOn(doctor, 'runBrowserDoctor').mockResolvedValue({
+    extensionConnected: true, extensionBuildVerified: false, uploadReady: false,
+    issues: ['Runtime build unverified', 'Upload capability missing'],
+  } as Awaited<ReturnType<typeof doctor.runBrowserDoctor>>);
+  const output = vi.spyOn(console, 'log').mockImplementation(() => {});
+  output.mockClear();
+  const previousExitCode = process.exitCode; process.exitCode = 0;
+  try {
+    await createProgram('', '').parseAsync(['node', 'bycli', 'doctor', '--json']);
+    expect(process.exitCode).toBe(0);
+    expect(JSON.parse(output.mock.calls[0][0])).toMatchObject({ extensionBuildVerified: false, uploadReady: false });
+  } finally { probe.mockRestore(); output.mockRestore(); process.exitCode = previousExitCode; }
+});

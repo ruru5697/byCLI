@@ -866,6 +866,21 @@ describe('BasePage native input routing', () => {
     expect((err as TargetError).hint).toContain('Select another radio');
   });
 
+  it('reports native injection separately when the page consumes its FileList', async () => {
+    const page = new ActionPage(); page.setFileInput = vi.fn().mockResolvedValue(undefined);
+    page.results = [resolveOk, []]; page.withArgsResults = [{ ok: true, multiple: false }, undefined];
+    await expect(page.uploadFiles('#file', ['/tmp/video.mp4'])).resolves.toMatchObject({ uploaded: true, files: 1, file_names: [], file_list_verified: false });
+    expect(page.setFileInput).toHaveBeenCalledTimes(1);
+  });
+  it('reports a proven no-injection failure separately from an ambiguous transport result', async () => {
+    for (const [nativeCode, code] of [['upload_not_started', 'UPLOAD_NOT_STARTED'], ['extension_capability_missing', 'UPLOAD_NOT_STARTED'], ['command_result_unknown', 'UPLOAD_RESULT_UNKNOWN']]) {
+      const page = new ActionPage(); page.setFileInput = vi.fn().mockRejectedValue(Object.assign(new Error('failed'), { code: nativeCode }));
+      page.results = [resolveOk]; page.withArgsResults = [{ ok: true, multiple: false }, undefined];
+      await expect(page.uploadFiles('#file', ['/tmp/video.mp4'])).rejects.toMatchObject({ code,
+        ...(nativeCode === 'extension_capability_missing' ? { hint: expect.stringContaining('Run bycli doctor') } : {}),
+      });
+    }
+  });
   it('uploads files through setFileInput using a temporary marker selector', async () => {
     const page = new ActionPage();
     page.setFileInput = vi.fn().mockResolvedValue(undefined);
@@ -879,6 +894,7 @@ describe('BasePage native input routing', () => {
       uploaded: true,
       files: 1,
       file_names: ['receipt.pdf'],
+      file_list_verified: true,
       target: '#file',
       matches_n: 1,
       match_level: 'exact',

@@ -90,3 +90,26 @@ The daemon is persistent — it stays alive until you explicitly stop it (`bycli
 ## Running byCLI from a remote machine
 
 If you need to run `bycli` on a remote server (CI runner, agent host) but keep the browser session on your local machine, see [Remote Orchestration](/guide/remote-orchestration). It walks through the SSH reverse-tunnel pattern so the daemon never leaves localhost.
+
+## Verify executing extension code
+
+CLI and extension versions are independent. A matching manifest version alone does not establish which background bundle the browser is executing. Extension builds include `dist/build-info.json`; the running worker reports its embedded build ID in its handshake. `bycli doctor --json` compares that ID with the installed package and verifies the package's script digest. A missing ID is unverified, not proof of stale cache. A mismatch requires reloading the extension or restarting the managed browser; restarting the daemon alone does not reload Chromium code.
+
+Doctor also reports the bundled extension's version and absolute directory separately from the connected version and release-update hints. This directory identifies the local build you can load; it is not proof of the browser's existing load path. File-upload readiness requires the connected profile to advertise `file-input-shadow-v1`. Generic connectivity and a matching build ID do not establish that capability, and capability readiness does not prove that a platform accepted an upload. Missing capabilities produce a warning and a nonzero doctor exit status. Reload through the browser's normal extension manager, then rerun doctor before retrying an operation with a recorded no-injection receipt. A site-access denial must be resolved in the relevant tool permissions; switching control channels is not a recovery step.
+
+`bycli doctor --diagnostics <new-directory>` saves a private `bridge-diagnostics.json` containing versions, build identities, connection state and capabilities. It omits cookies, page content and media. Keep the original operation journal for publishing failures. Do not delete a browser profile or operation to make a retry possible.
+
+Native upload returns success only when the selected FileList can be verified. This confirms file selection, not platform acceptance. `UPLOAD_NOT_STARTED` means the file injection was not dispatched; `UPLOAD_RESULT_UNKNOWN` requires inspecting the platform before any retry. Native file injection is not automatically replayed after a lost response. The bridge advertises `file-input-shadow-v1` for the dedicated open-shadow upload path. Direct CDP backends use the same uniqueness and file-input checks; closed shadows and iframe boundaries are not crossed implicitly.
+
+After changing extension code, increase both `extension/package.json` and `extension/manifest.json` versions before release. Build and package the extension together so its runtime ID, script digest and manifest agree. Release packaging rejects inconsistent metadata.
+
+An isolated native-upload smoke test is available after `npm run build && npm run build:extension`:
+
+```bash
+BYCLI_UPLOAD_E2E=1 CHROME_PATH='<extension-capable Chromium executable>' \
+  npx vitest run --project e2e tests/e2e/browser-upload-local.test.ts
+```
+
+It uses a private daemon port, a disposable profile and about:blank fixtures, and exercises nested open shadows through the actual extension. It does not establish acceptance by a publishing platform.
+
+原生文件注入返回成功后，页面可能立即消费或替换 input；即时 FileList 为空只标记 `file_list_verified=false`，不自动重传，也不单独判定平台失败。`uploaded=true` 表示原生注入已返回成功，`files` 为注入文件数、`file_names` 为当时观察到的名称；封面仍须通过自定义图片、裁剪器绑定、确认和卡片身份核验后才能保存。

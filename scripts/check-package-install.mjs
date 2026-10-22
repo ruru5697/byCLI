@@ -41,9 +41,14 @@ try {
   ]) {
     cpSync(join(root, path), join(mainStage, path), { recursive: true });
   }
+  mkdirSync(join(mainStage, 'extension'));
+  for (const file of ['manifest.json', 'popup.html', 'popup.js', 'icons', 'dist']) {
+    cpSync(join(root, 'extension', file), join(mainStage, 'extension', file), { recursive: true });
+  }
 
   const core = pack(join(root, 'packages/recorder-core'));
   const main = pack(mainStage);
+  assert(main.files.has('extension/dist/build-info.json'), 'bycli tarball is missing extension build metadata');
 
   for (const file of ['dist/index.js', 'dist/index.d.ts', 'README.md', 'LICENSE']) {
     assert(core.files.has(file), `recorder-core tarball is missing ${file}`);
@@ -82,6 +87,15 @@ try {
   );
   await import(pathToFileURL(recorderEntry).href);
   await import(pathToFileURL(join(coreDirectory, 'dist/index.js')).href);
+  const installedRoot = join(project, 'node_modules/@sovovs/bycli');
+  const { installedExtensionBuild } = await import(pathToFileURL(join(installedRoot, 'dist/src/browser/extension-build.js')).href);
+  assert.equal(installedExtensionBuild().valid, true, 'installed extension artifact must match its build metadata');
+  const config = join(temp, 'private-config');
+  const smokeEnv = { ...process.env, BYCLI_CONFIG_DIR: config };
+  const installedCli = join(installedRoot, 'dist/src/main.js');
+  execFileSync(process.execPath, [installedCli, 'adapter', 'eject', 'weixin-channels'], { cwd: project, env: smokeEnv, stdio: 'pipe' });
+  const help = execFileSync(process.execPath, [installedCli, 'weixin-channels', 'video-publish', '--help', '-f', 'json'], { cwd: project, env: smokeEnv, encoding: 'utf8' });
+  assert(help.includes('retry-cover-upload'), 'ejected adapter did not load its complete dependency closure');
   console.log('package install smoke test passed');
 } finally {
   rmSync(temp, { recursive: true, force: true });

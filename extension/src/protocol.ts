@@ -6,6 +6,7 @@
  */
 
 export type Action =
+  | 'dialog-policy'
   | 'exec'
   | 'navigate'
   | 'tabs'
@@ -31,6 +32,8 @@ export type Action =
   | 'frames';
 
 export interface Command {
+  dialogToken?: string;
+  dialogOrigin?: string;
   /** Console snapshot level; error includes warnings. */
   level?: string;
   /** Unique request ID */
@@ -50,7 +53,7 @@ export interface Command {
   /** URL to navigate to (navigate action) */
   url?: string;
   /** Sub-operation for tabs: list, new, close, select, focus */
-  op?: 'list' | 'new' | 'close' | 'select' | 'focus';
+  op?: 'list' | 'new' | 'close' | 'select' | 'focus' | 'start' | 'stop';
   /** Tab index for tabs select/close */
   index?: number;
   /** Cookie domain filter */

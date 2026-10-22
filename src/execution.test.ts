@@ -1559,6 +1559,20 @@ describe('executeCommand — non-browser timeout', () => {
     vi.restoreAllMocks();
   });
 
+  it('isolates Channels queries while retaining the editor lease for read-only inspection', async () => {
+    const sessions: string[] = [];
+    vi.spyOn(capRouting, 'shouldUseBrowserSession').mockReturnValue(true);
+    vi.spyOn(runtime, 'browserSession').mockImplementation(async (_Factory, fn, opts) => {
+      sessions.push(opts?.session ?? ''); return fn({ closeWindow: vi.fn() } as any);
+    });
+    for (const [name, args] of [['video-publish', {}], ['overview', {}], ['video-status', { 'inspect-editor': true }], ['video-status', { id: '123' }]] as const) {
+      const cmd = cli({ site: 'weixin-channels', name, access: name === 'video-publish' ? 'write' : 'read',
+        strategy: Strategy.PUBLIC, browser: true, siteSession: 'persistent', func: async () => [] });
+      await executeCommand(cmd, args);
+    }
+    expect(sessions[0]).toBe(sessions[2]); expect(sessions[0]).not.toBe(sessions[1]); expect(sessions[0]).not.toBe(sessions[3]);
+    vi.restoreAllMocks();
+  });
   it('uses a distinct persistent browser session for a valid named Adapter session', async () => {
     const mockPage = {
       closeWindow: vi.fn().mockResolvedValue(undefined),

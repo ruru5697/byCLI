@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 const created = vi.hoisted(() => []);
@@ -21,4 +21,15 @@ it('keeps local status browser-free and remote reconciliation on its separate ad
   const separate = { contextId: 'profile-a' };
   expect(await editorSessionPage(separate, { operation: file, 'management-id': 'export/test' }, true)).toBe(separate);
   expect(created).toEqual([]);
+});
+
+it.each([false, true])('resumes a saved draft on the owned adapter lease instead of its old borrowed session (saved covers: %s)', async covers => {
+  const op = JSON.parse(await readFile(file, 'utf8'));
+  op.source_draft_id = 'export/saved'; op.status = 'prepared';
+  if (covers) op.cover = { saved: true, phase: 'configured', sources: { horizontal: { path: '/fixture.png', sha256: 'a'.repeat(64) } } };
+  await writeFile(file, JSON.stringify(op));
+  const owned = { contextId: 'profile-a' };
+  expect(await editorSessionPage(owned, { operation: file, mode: 'resume' })).toBe(owned);
+  expect(created).toEqual([]);
+  expect(await editorSessionPage(owned, { operation: file, mode: 'submit' })).not.toBe(owned);
 });

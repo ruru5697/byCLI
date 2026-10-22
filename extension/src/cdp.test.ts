@@ -43,6 +43,14 @@ function createChromeMock() {
 }
 
 describe('cdp attach recovery', () => {
+  it('reaches dialog handling without a renderer probe when a dialog may already be open', async () => {
+    const { chrome, debuggerApi } = createChromeMock(); vi.stubGlobal('chrome', chrome);
+    const mod = await import('./cdp');
+    await mod.ensureAttached(1);
+    debuggerApi.sendCommand.mockClear();
+    await mod.ensureAttached(1, false, true);
+    expect(debuggerApi.sendCommand).not.toHaveBeenCalled();
+  });
   beforeEach(() => {
     vi.resetModules();
   });

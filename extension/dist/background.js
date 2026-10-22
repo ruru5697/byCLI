@@ -385,7 +385,7 @@ function isDebuggableUrl$1(url) {
   if (!url) return true;
   return url.startsWith("http://") || url.startsWith("https://") || url === "about:blank" || url.startsWith("data:");
 }
-async function ensureAttached(tabId, aggressiveRetry = false) {
+async function ensureAttached(tabId, aggressiveRetry = false, dialogSafeProbe = false) {
   try {
     const tab = await chrome.tabs.get(tabId);
     if (!isDebuggableUrl$1(tab.url)) {
@@ -398,11 +398,10 @@ async function ensureAttached(tabId, aggressiveRetry = false) {
     throw new Error(`Tab ${tabId} no longer exists`);
   }
   if (attached.has(tabId)) {
+    if (dialogSafeProbe) return;
     try {
-      await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
-        expression: "1",
-        returnByValue: true
-      });
+      await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", { expression: "1", returnByValue: true });
+      if (!consoleCaptures.has(tabId)) await initializeAttachedRuntime(tabId);
       return;
     } catch {
       attached.delete(tabId);
@@ -451,6 +450,10 @@ async function ensureAttached(tabId, aggressiveRetry = false) {
     throw new Error(`attach failed: ${lastError}${hint}`);
   }
   attached.add(tabId);
+  if (dialogSafeProbe) return;
+  await initializeAttachedRuntime(tabId);
+}
+async function initializeAttachedRuntime(tabId) {
   const consoleState = { id: crypto.randomUUID(), seq: 0, messages: [], enabled: false, error: void 0 };
   consoleCaptures.set(tabId, consoleState);
   try {
@@ -540,36 +543,41 @@ async function screenshot(tabId, options = {}) {
   }
 }
 async function setFileInputFiles(tabId, files, selector) {
-  await ensureAttached(tabId);
-  await chrome.debugger.sendCommand({ tabId }, "DOM.enable");
-  const doc = await chrome.debugger.sendCommand({ tabId }, "DOM.getDocument", { depth: -1, pierce: true });
-  const query = selector || 'input[type="file"]';
-  const roots = [doc.root.nodeId];
-  function collect(node) {
-    for (const root of node.shadowRoots || []) {
-      if (root.shadowRootType !== "open") continue;
-      roots.push(root.nodeId);
-      collect(root);
+  let nodeId;
+  try {
+    let collect = function(node) {
+      for (const root of node.shadowRoots || []) {
+        if (root.shadowRootType !== "open") continue;
+        roots.push(root.nodeId);
+        collect(root);
+      }
+      for (const child of node.children || []) collect(child);
+    };
+    await ensureAttached(tabId);
+    await chrome.debugger.sendCommand({ tabId }, "DOM.enable");
+    const doc = await chrome.debugger.sendCommand({ tabId }, "DOM.getDocument", { depth: -1, pierce: true });
+    const query = selector || 'input[type="file"]';
+    const roots = [doc.root.nodeId];
+    collect(doc.root);
+    const matches = /* @__PURE__ */ new Set();
+    for (const nodeId2 of roots) {
+      const result = await chrome.debugger.sendCommand({ tabId }, "DOM.querySelectorAll", {
+        nodeId: nodeId2,
+        selector: query
+      });
+      for (const id of result.nodeIds || []) matches.add(id);
     }
-    for (const child of node.children || []) collect(child);
-  }
-  collect(doc.root);
-  const matches = /* @__PURE__ */ new Set();
-  for (const nodeId2 of roots) {
-    const result = await chrome.debugger.sendCommand({ tabId }, "DOM.querySelectorAll", {
-      nodeId: nodeId2,
-      selector: query
-    });
-    for (const id of result.nodeIds || []) matches.add(id);
-  }
-  if (matches.size !== 1) throw new Error(`File input selector must match exactly one element; got ${matches.size}`);
-  const nodeId = [...matches][0];
-  const attributes = await chrome.debugger.sendCommand({ tabId }, "DOM.getAttributes", { nodeId });
-  const attrs = /* @__PURE__ */ new Map();
-  for (let i = 0; i < attributes.attributes.length; i += 2) attrs.set(attributes.attributes[i], attributes.attributes[i + 1]);
-  const description = await chrome.debugger.sendCommand({ tabId }, "DOM.describeNode", { nodeId });
-  if (description.node.localName !== "input" || attrs.get("type")?.toLowerCase() !== "file") {
-    throw new Error("Upload target is not an input[type=file]");
+    if (matches.size !== 1) throw new Error(`File input selector must match exactly one element; got ${matches.size}`);
+    nodeId = [...matches][0];
+    const attributes = await chrome.debugger.sendCommand({ tabId }, "DOM.getAttributes", { nodeId });
+    const attrs = /* @__PURE__ */ new Map();
+    for (let i = 0; i < attributes.attributes.length; i += 2) attrs.set(attributes.attributes[i], attributes.attributes[i + 1]);
+    const description = await chrome.debugger.sendCommand({ tabId }, "DOM.describeNode", { nodeId });
+    if (description.node.localName !== "input" || attrs.get("type")?.toLowerCase() !== "file") {
+      throw new Error("Upload target is not an input[type=file]");
+    }
+  } catch (error) {
+    throw Object.assign(new Error(error instanceof Error ? error.message : String(error)), { code: "upload_not_started" });
   }
   await chrome.debugger.sendCommand({ tabId }, "DOM.setFileInputFiles", {
     files,
@@ -1697,7 +1705,122 @@ function constrainOwnedWindowBounds(window, area) {
   return { left, top, width, height };
 }
 
-const EXTENSION_CAPABILITIES = ["focus-window-v1", "ima-reader-v1", "console-capture-v1"];
+const policies = /* @__PURE__ */ new Map();
+const ordinary = /* @__PURE__ */ new Set(["alert", "confirm", "beforeunload"]);
+const pendingDialogs = /* @__PURE__ */ new Map();
+let tracking = false;
+function registerDialogTracking() {
+  if (tracking) return;
+  tracking = true;
+  chrome.debugger.onEvent.addListener((source, method, params) => {
+    if (source.tabId === void 0) return;
+    if (method === "Page.javascriptDialogOpening") {
+      const detail = params;
+      pendingDialogs.set(source.tabId, { source, detail: { type: detail?.type, url: detail?.url } });
+    } else if (method === "Page.javascriptDialogClosed") pendingDialogs.delete(source.tabId);
+  });
+  chrome.debugger.onDetach.addListener((source) => {
+    if (source.tabId !== void 0) pendingDialogs.delete(source.tabId);
+  });
+  chrome.tabs.onRemoved.addListener((tabId) => pendingDialogs.delete(tabId));
+}
+function hasDialogPolicy(tabId) {
+  return [...policies.values()].some((policy) => policy.tabId === tabId);
+}
+function clearDialogPolicies() {
+  for (const policy of [...policies.values()]) policy.dispose();
+}
+function assertDialogPolicy(token, lease, tabId) {
+  const policy = policies.get(token);
+  if (!policy || policy.lease !== lease || policy.tabId !== tabId) throw new Error("Dialog policy expired or page/lease changed; inspect the retained editor before resuming");
+  if (policy.failure) throw new Error(policy.failure);
+}
+function stopDialogPolicy(token, lease) {
+  const policy = policies.get(token);
+  if (!policy) return { accepted: 0, beforeUnload: 0 };
+  if (policy.lease !== lease) throw new Error("Dialog policy belongs to another browser lease");
+  policy.dispose();
+  return { accepted: policy.accepted, beforeUnload: policy.beforeUnload };
+}
+async function startDialogPolicy(token, lease, tabId, origin, timeoutMs) {
+  const url = new URL(origin);
+  if (!["http:", "https:"].includes(url.protocol) || url.origin !== origin) throw new Error("Dialog policy requires an exact HTTP(S) origin");
+  if (!/^[\w-]{1,100}$/.test(token) || !Number.isInteger(timeoutMs) || timeoutMs < 1e3 || timeoutMs > 186e4) throw new Error("Invalid dialog policy token or timeout");
+  const existing = policies.get(token);
+  if (existing) {
+    assertDialogPolicy(token, lease, tabId);
+    return;
+  }
+  if (hasDialogPolicy(tabId)) throw new Error("A dialog policy is already active on this tab");
+  let active = true;
+  let open = false;
+  let setupTimer;
+  let interruptSetup;
+  const setupInterrupted = new Promise((_resolve, reject) => {
+    interruptSetup = reject;
+  });
+  const policy = { token, lease, tabId, origin, accepted: 0, beforeUnload: 0, dispose: () => {
+    active = false;
+    interruptSetup(new Error("Dialog policy stopped or expired"));
+    clearTimeout(timer);
+    if (setupTimer) clearTimeout(setupTimer);
+    chrome.debugger.onEvent.removeListener(onEvent);
+    chrome.debugger.onDetach.removeListener(onDetach);
+    chrome.tabs.onRemoved.removeListener(onRemoved);
+    policies.delete(token);
+  } };
+  const onEvent = (source, method, params) => {
+    if (!active || source.tabId !== tabId) return;
+    if (method === "Page.javascriptDialogClosed") {
+      open = false;
+      return;
+    }
+    if (method !== "Page.javascriptDialogOpening" || open) return;
+    open = true;
+    const event = params;
+    let matches = false;
+    try {
+      matches = new URL(event?.url ?? "").origin === origin;
+    } catch {
+    }
+    if (!matches || !ordinary.has(event?.type ?? "")) {
+      policy.failure = "Browser dialog requires manual input or belongs to another origin; it was not accepted";
+      interruptSetup(new Error(policy.failure));
+      return;
+    }
+    void chrome.debugger.sendCommand(source, "Page.handleJavaScriptDialog", { accept: true }).then(() => {
+      policy.accepted++;
+      if (event?.type === "beforeunload") policy.beforeUnload++;
+    }, () => {
+      policy.failure = "Browser dialog acceptance failed; inspect the retained editor";
+    });
+  };
+  const onDetach = (source) => {
+    if (source.tabId === tabId) policy.dispose();
+  };
+  const onRemoved = (id) => {
+    if (id === tabId) policy.dispose();
+  };
+  const timer = setTimeout(() => policy.dispose(), timeoutMs);
+  policies.set(token, policy);
+  chrome.debugger.onEvent.addListener(onEvent);
+  chrome.debugger.onDetach.addListener(onDetach);
+  chrome.tabs.onRemoved.addListener(onRemoved);
+  try {
+    const pending = pendingDialogs.get(tabId);
+    if (pending) onEvent(pending.source, "Page.javascriptDialogOpening", pending.detail);
+    setupTimer = setTimeout(() => interruptSetup(new Error("Dialog setup timed out; an unobserved existing modal may need manual cancellation before resuming")), 3e3);
+    await Promise.race([chrome.debugger.sendCommand({ tabId }, "Page.enable"), setupInterrupted]);
+    clearTimeout(setupTimer);
+  } catch (error) {
+    policy.dispose();
+    throw error;
+  }
+}
+
+const RUNTIME_BUILD_ID = "81c81f46dc7d6fee7bd001e8ca1f978da06c79845b4fd824ecceb0cb196fcf76" ;
+Object.defineProperty(globalThis, "__BYCLI_RUNTIME_BUILD_ID__", { value: RUNTIME_BUILD_ID, configurable: true });
+const EXTENSION_CAPABILITIES = ["focus-window-v1", "ima-reader-v1", "console-capture-v1", "file-input-shadow-v1", "dialog-policy-v1"];
 let ws = null;
 let reconnectTimer = null;
 let reconnectAttempts = 0;
@@ -1792,8 +1915,12 @@ async function connectAttempt() {
   if (isDaemonSocketActive()) return;
   try {
     const res = await fetch(DAEMON_PING_URL, { signal: AbortSignal.timeout(1e3) });
-    if (!res.ok) return;
+    if (!res.ok) {
+      scheduleReconnect();
+      return;
+    }
   } catch {
+    scheduleReconnect();
     return;
   }
   if (isDaemonSocketActive()) return;
@@ -1820,6 +1947,7 @@ async function connectAttempt() {
       type: "hello",
       contextId: currentContextId,
       version: chrome.runtime.getManifest().version,
+      buildId: RUNTIME_BUILD_ID,
       compatRange: ">=1.7.0",
       capabilities: EXTENSION_CAPABILITIES
     });
@@ -1846,6 +1974,7 @@ async function connectAttempt() {
   };
   thisWs.onclose = () => {
     if (ws !== thisWs) return;
+    clearDialogPolicies();
     console.log("[bycli] Disconnected from daemon");
     ws = null;
     scheduleReconnect();
@@ -2556,6 +2685,7 @@ function initialize() {
   initialized = true;
   chrome.alarms.create("keepalive", { periodInMinutes: 0.4 });
   registerListeners();
+  registerDialogTracking();
   try {
     const registerFrameTracking$1 = registerFrameTracking;
     registerFrameTracking$1?.();
@@ -2598,6 +2728,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         reconnecting: reconnectTimer !== null,
         contextId,
         extensionVersion,
+        extensionBuildId: RUNTIME_BUILD_ID,
         daemonVersion
       });
     })();
@@ -2634,7 +2765,19 @@ async function handleCommand(cmd) {
   }
   resetWindowIdleTimer(leaseKey);
   try {
+    if (cmd.dialogToken && cmd.action !== "dialog-policy") {
+      assertDialogPolicy(cmd.dialogToken, leaseKey, await resolveCommandTabId(cmd));
+    }
     switch (cmd.action) {
+      case "dialog-policy": {
+        if (!cmd.dialogToken) throw new Error("Dialog policy token is required");
+        if (cmd.op === "stop") return { id: cmd.id, ok: true, data: stopDialogPolicy(cmd.dialogToken, leaseKey) };
+        if (cmd.op !== "start") throw new Error("Invalid dialog policy operation");
+        const tabId = await resolveTabId(await resolveCommandTabId(cmd), leaseKey);
+        await ensureAttached(tabId, false, true);
+        await startDialogPolicy(cmd.dialogToken, leaseKey, tabId, cmd.dialogOrigin ?? "", cmd.timeoutMs ?? 18e4);
+        return pageScopedResult(cmd.id, tabId, { token: cmd.dialogToken });
+      }
       case "exec":
         return await handleExec(cmd, leaseKey);
       case "navigate":
@@ -2965,7 +3108,7 @@ async function handleNavigateUnlocked(cmd, leaseKey) {
   if (beforeTab.status === "complete" && isTargetUrl(beforeTab.url, targetUrl)) {
     return pageScopedResult(cmd.id, tabId, { title: beforeTab.title, url: beforeTab.url, timedOut: false });
   }
-  if (!hasActiveNetworkCapture(tabId)) {
+  if (!hasActiveNetworkCapture(tabId) && !hasDialogPolicy(tabId)) {
     await detach(tabId);
   }
   const aggressive = getSurfaceFromKey(leaseKey) === "browser";
@@ -3331,7 +3474,7 @@ async function handleCdp(cmd, leaseKey) {
   const tabId = await resolveTabId(cmdTabId, leaseKey);
   try {
     const aggressive = getSurfaceFromKey(leaseKey) === "browser";
-    await ensureAttached(tabId, aggressive);
+    await ensureAttached(tabId, aggressive, cmd.cdpMethod === "Page.handleJavaScriptDialog");
     const params = cmd.cdpParams ?? {};
     const routeFrameId = typeof params.frameId === "string" && params.sessionId === "target" ? params.frameId : void 0;
     const routeTargetUrl = typeof params.targetUrl === "string" ? params.targetUrl : void 0;
@@ -3365,7 +3508,7 @@ async function handleSetFileInput(cmd, leaseKey) {
     await setFileInputFiles(tabId, cmd.files, cmd.selector);
     return pageScopedResult(cmd.id, tabId, { count: cmd.files.length });
   } catch (err) {
-    return { id: cmd.id, ok: false, error: err instanceof Error ? err.message : String(err) };
+    return { id: cmd.id, ok: false, error: err instanceof Error ? err.message : String(err), errorCode: errorCodeOf(err) };
   }
 }
 async function handleInsertText(cmd, leaseKey) {
@@ -3613,9 +3756,6 @@ async function handleBind(cmd, leaseKey) {
 }
 async function handleBindUnlocked(cmd, leaseKey) {
   const existing = automationSessions.get(leaseKey);
-  if (existing?.owned) {
-    await releaseLeaseUnlocked(leaseKey, "rebind");
-  }
   const activeTabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   const fallbackTabs = await chrome.tabs.query({ lastFocusedWindow: true });
   const boundTab = activeTabs.find((tab) => isDebuggableUrl(tab.url)) ?? fallbackTabs.find((tab) => isDebuggableUrl(tab.url));
@@ -3628,6 +3768,10 @@ async function handleBindUnlocked(cmd, leaseKey) {
       errorHint: "Focus the target Chrome tab/window, then retry bind."
     };
   }
+  if (existing?.owned && boundTab.windowId === existing.windowId) {
+    return pageScopedResult(cmd.id, boundTab.id, { url: boundTab.url, title: boundTab.title, session: getSessionFromKey(leaseKey) });
+  }
+  if (existing?.owned) await releaseLeaseUnlocked(leaseKey, "rebind");
   const current = automationSessions.get(leaseKey);
   if (current && !current.owned && current.preferredTabId !== null && current.preferredTabId !== boundTab.id) {
     await detach(current.preferredTabId).catch(() => {

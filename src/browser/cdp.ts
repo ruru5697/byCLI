@@ -100,25 +100,32 @@ export class CDPBridge implements IBrowserFactory {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(wsUrl);
       const timeoutMs = (opts?.timeout ?? 10) * 1000;
-      const timeout = setTimeout(() => {
-        this._ws = null;
-        ws.close();
-        reject(new Error('CDP connect timeout'));
-      }, timeoutMs);
+      const initializationTimeout = () => {
+        void this.close();
+        reject(new Error('CDP initialization timed out; an existing browser dialog may require the original connection or manual cancellation before reconnecting'));
+      };
+      let timeout = setTimeout(initializationTimeout, timeoutMs);
 
       ws.on('open', async () => {
         clearTimeout(timeout);
+        timeout = setTimeout(initializationTimeout, Math.min(timeoutMs, 10000));
         this._ws = ws;
         const page = new CDPPage(this);
         try {
-          await page.enableConsoleCapture();
           await this.send('Page.enable');
-          await this.send('Page.addScriptToEvaluateOnNewDocument', { source: generateStealthJs() });
+          // A pre-existing modal can block Runtime setup. Return the page so a
+          // scoped operation can accept it before evaluating renderer code.
+          if (!page.hasPendingDialog()) {
+            await page.enableConsoleCapture();
+            await this.send('Page.addScriptToEvaluateOnNewDocument', { source: generateStealthJs() });
+          }
         } catch (err) {
+          clearTimeout(timeout);
           ws.close();
           reject(err instanceof Error ? err : new Error(String(err)));
           return;
         }
+        clearTimeout(timeout);
         resolve(page);
       });
 
@@ -218,7 +225,65 @@ export class CDPBridge implements IBrowserFactory {
 }
 
 class CDPPage extends BasePage {
+  private _dialogScope: { error?: Error } | undefined;
+
+  async withAcceptedDialogs<T>(origin: string, run: () => Promise<T>, timeoutMs = 180000): Promise<T> {
+    const url = new URL(origin);
+    if (!['http:', 'https:'].includes(url.protocol) || url.origin !== origin) throw new Error('Dialog policy requires an exact HTTP(S) origin');
+    if (this._dialogScope || !Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 1860000) throw new Error('Invalid or overlapping dialog policy');
+    const scope: { error?: Error } = {};
+    this._dialogScope = scope;
+    let active = true;
+    let open = false;
+    const pending: Promise<unknown>[] = [];
+    const onDialog = (params: unknown) => {
+      if (!active || open) return;
+      open = true;
+      const event = params as { url?: string; type?: string };
+      let matches = false;
+      try { matches = new URL(event?.url ?? '').origin === origin; } catch { /* unverified origin */ }
+      if (!matches || !['alert', 'confirm', 'beforeunload'].includes(event?.type ?? '')) {
+        scope.error = new Error('Browser dialog requires manual input or belongs to another origin; it was not accepted');
+        return;
+      }
+      pending.push(this.bridge.send('Page.handleJavaScriptDialog', { accept: true }).catch(() => {
+        scope.error = new Error('Browser dialog acceptance failed; inspect the retained editor');
+      }));
+    };
+    const onClosed = () => { open = false; };
+    const timer = setTimeout(() => {
+      active = false;
+      scope.error = new Error('Dialog policy expired; inspect the retained editor before resuming');
+      this.bridge.off('Page.javascriptDialogOpening', onDialog);
+      this.bridge.off('Page.javascriptDialogClosed', onClosed);
+    }, timeoutMs);
+    this.bridge.on('Page.javascriptDialogOpening', onDialog);
+    this.bridge.on('Page.javascriptDialogClosed', onClosed);
+    try {
+      if (this._pendingDialog) {
+        onDialog(this._pendingDialog);
+        await Promise.all(pending);
+        if (scope.error) throw scope.error;
+      }
+      await this.bridge.send('Page.enable');
+      if (!this._consoleEnabled) await this.enableConsoleCapture();
+      const result = await run();
+      await Promise.all(pending);
+      if (scope.error) throw scope.error;
+      return result;
+    } finally {
+      active = false; clearTimeout(timer);
+      this.bridge.off('Page.javascriptDialogOpening', onDialog);
+      this.bridge.off('Page.javascriptDialogClosed', onClosed);
+      this._dialogScope = undefined;
+    }
+  }
+
+  private assertDialogScope(): void { if (this._dialogScope?.error) throw this._dialogScope.error; }
   private _pageEnabled = false;
+  private _pendingDialog: { type?: string; url?: string } | undefined;
+  private _consoleEnabled = false;
+  hasPendingDialog(): boolean { return this._pendingDialog !== undefined; }
 
   // Network capture state (mirrors extension/src/cdp.ts NetworkCaptureEntry shape)
   private _networkCapturing = false;
@@ -239,12 +304,17 @@ class CDPPage extends BasePage {
 
   constructor(private bridge: CDPBridge) {
     super();
+    this.bridge.on('Page.javascriptDialogOpening', params => {
+      this._pendingDialog = params as { type?: string; url?: string };
+    });
+    this.bridge.on('Page.javascriptDialogClosed', () => { this._pendingDialog = undefined; });
     this.bridge.on('Runtime.consoleAPICalled', params => this.recordConsoleEvent(false, params));
     this.bridge.on('Runtime.exceptionThrown', params => this.recordConsoleEvent(true, params));
   }
 
   async enableConsoleCapture(): Promise<void> {
     await this.bridge.send('Runtime.enable');
+    this._consoleEnabled = true;
   }
 
   private recordConsoleEvent(exception: boolean, raw: unknown): void {
@@ -278,6 +348,7 @@ class CDPPage extends BasePage {
   }
 
   async goto(url: string, options?: { waitUntil?: 'load' | 'none'; settleMs?: number; allowBoundNavigation?: boolean; guardNavigation?: boolean }): Promise<void> {
+    this.assertDialogScope();
     if (!this._pageEnabled) {
       await this.bridge.send('Page.enable');
       this._pageEnabled = true;
@@ -330,6 +401,7 @@ class CDPPage extends BasePage {
   async evaluate<T = unknown>(js: string): Promise<T>;
   async evaluate<Args extends unknown[], T>(fn: BrowserEvaluateFunction<Args, T>, ...args: Args): Promise<Awaited<T>>;
   async evaluate(input: string | BrowserEvaluateFunction<unknown[], unknown>, ...args: unknown[]): Promise<unknown> {
+    this.assertDialogScope();
     const expression = buildEvaluateExpression(input, args);
     const result = await this.bridge.send('Runtime.evaluate', {
       expression,
@@ -502,6 +574,7 @@ class CDPPage extends BasePage {
   }
 
   async cdp(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
+    this.assertDialogScope();
     return this.bridge.send(method, params);
   }
 

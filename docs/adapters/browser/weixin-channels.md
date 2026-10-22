@@ -154,12 +154,14 @@ bycli weixin-channels video-publish --mode submit --user-confirmed \
 
 **最新验收边界**：2026-10-19 用户重启浏览器后封面生成恢复，已通过 byCLI 绑定页面流程实际发表一条固定视频，后台列表由 18 条稳定增加到 19 条。整合后的 video-status 按精确管理端 ID 读到该作品累计数据。历史列表、趋势、来源和留存此前已通过；新作品结算后的日统计仍待验证，公开 URL 未验证。重启恢复和最终点击经绑定页面流程完成，不表示 video-publish 已支持自动跨重启恢复。详见 [重启后发表及数据验收](../../research/connector-integration-2026-10-19/weixin-channels-restart-publication-validation-2026-10-19.md)；[首次真实验收](../../research/connector-integration-2026-10-19/weixin-channels-live-validation-2026-10-19.md) 保留此前封面阻塞记录。
 
-发布分成两个独立步骤，必须显式 `--execute`，并一直复用同一个本地操作记录。准备阶段会选择文件、填写描述、设置 AI 标注并等待视频预览元数据；随后点击原生“保存草稿”，按成功回执 ID 从草稿箱重开核对；不会点击发表。当前不自动选择封面、声明原创、接受协议或完成验证，页面要求这些动作时应人工检查。
+发布分成两个独立步骤，必须显式 `--execute`，并一直复用同一个本地操作记录。准备阶段会选择文件、填写描述、设置 AI 标注并等待视频预览元数据；随后点击原生“保存草稿”，按成功回执 ID 从草稿箱重开核对；不会点击发表。准备时可用 `--cover` 指定分享卡片横封面（4:3），用 `--vertical-cover` 指定个人主页竖封面（3:4）；各自接受本地 PNG/JPEG，未指定的一项保留平台默认封面。声明原创、接受协议或完成验证仍需按页面要求人工检查。
 
 ```bash
 # 父目录须先存在；准备后保留原标签页，核对视频、描述、封面和 AI 标注
 bycli weixin-channels video-publish ./video.mp4 \
   --description '完整视频描述' --ai-generated yes \
+  --cover ./horizontal-cover.jpg \
+  --vertical-cover ./vertical-cover.jpg \
   --operation ./channels-operation.json --execute \
   --keep-tab true --window foreground -f json
 
@@ -196,6 +198,10 @@ bycli weixin-channels video-status --operation ./channels-operation.json \
   --id '<完整 objectId>' --days 30 --limit 100 -f json
 ```
 
+`--cover` 和 `--vertical-cover` 仅用于新操作的 `prepare`，可独立传入两张图片，也可只指定其中一项；未指定的卡片不上传或改动。传入时先保存并重开原始草稿，再分别通过原生“编辑分享卡片”“编辑个人主页卡片”上传对应图片并确认；裁剪方式沿用平台默认值。更新只保存回同一个精确草稿 ID，随后再次重开核对已配置的封面资源。每张源图片的 SHA-256 写入操作记录，上传前源文件变化会拒绝继续；提交前核对完整资源身份，签名 token 更新不作为换图。上传或确认未知时保留原页，不自动重传。`resume`、`retry-upload` 沿用记录中的封面，不能临时传入另一张图片。
+
+2026-10-20 真实网页验收：两张不同的本地图片已分别设置为横、竖封面，保存回同一个草稿 ID，并由 `resume` 重开核对两项资源身份，结果 `prepared`、`custom_cover.saved=true`、`submitted=false`。横封面确认曾中断，经检查现场恢复后完成；本轮未公开发布，也未将此结果当作全新 `prepare` 无中断完成的证明。
+
 `--ai-generated yes/no` 必须按实际填写。`video-publish --timeout` 接受 1–1800 秒，默认 180；`prepare` 为默认模式，`submit` 不重新上传。提交时必须有匹配的页面身份、操作标记、完整描述、视频元数据及 AI 标注；刷新或换页后拒绝提交。
 
 `retry-upload` 不自动触发。它只允许未尝试提交且准备中断的原操作，在仍能识别的原标签页上执行；要求页面没有视频、已选择文件或描述，文件 SHA256 与原记录一致。描述和 AI 选项仍取原记录，并追加 `upload_retries`。有预览时用 `resume`，已尝试提交时只能核对状态；不能以重传覆盖未知提交结果。这不提供浏览器重启后失去标签页身份的自动恢复。
@@ -225,3 +231,21 @@ bycli weixin-channels video-status --operation ./channels-operation.json \
 收藏尚无已核实的独立后台字段；原有 `likes` 是“喜欢”，不能改名当作“收藏”。本次没有补造收藏值。
 
 Chrome 扩展需加载本次 `npm run build:extension` 产物后，专用文件上传动作才支持 open Shadow DOM。CSS/语义查找和 ref 解析同步支持 open shadow roots；跨 iframe、closed shadow roots 不在本次扩展范围。没有开放额外 raw CDP 方法。
+
+### 恢复与诊断
+
+- 登录、导航、初始化失败不会创建新的 operation；完成登录后可原样 `prepare`。操作在编辑器就绪后、文件注入前落盘；已有记录始终保留。
+- 上传记录区分 `none`、`in_flight`、`confirmed`、`unknown`。只有明确未注入、原文件哈希一致且编辑页为空时，才允许 `retry-upload`。未知或旧版缺少上传证据的记录只能核对/恢复。
+- `resume` 沿用原 operation。已保存草稿且没有未保存封面时按精确草稿 ID 重开，不依赖旧页面 ID；未保存的视频或封面仍要求原页。完成的封面不重传，未知确认不重按。
+- 全阶段共用 `--timeout`；每 15 秒报告进度。上传/转码按总预算等待，封面初次加载按下述有界刷新规则恢复。超时不表示平台失败，也不授权重复上传、保存或提交。
+- `doctor --json` 提供运行 build ID、安装包指纹和上传能力，`--diagnostics <新目录>` 可保存脱敏报告。指纹未核验或缺少上传能力是诊断提示，不阻止只读或草稿恢复；具体动作检查自身所需能力。
+- 查询使用独立租约，`video-status --inspect-editor` 保留发布租约。`bind` 后使用返回的当前 `page`。`adapter eject` 随适配器封装共享依赖，升级后检查用户覆盖是否遮住官方修复。
+- 微信 Runner 的 Gate 只控制认证确认和重试预算；所有上传、保存和提交防重由 operation 负责。重复显式调用会返回原操作状态，不会再次提交。最终发表仍要求单独的 `submit --user-confirmed`。
+
+视频号描述核对仅统一 CRLF、忽略末尾换行；正文、段落和空格仍需一致。通用 `fillText` 保持逐字校验；只对 contenteditable 的返回值及同一编辑页的新鲜读取均等价时接受该渲染差异。
+
+发布命令自动接受本次操作标签页、`https://channels.weixin.qq.com` 的普通 `alert`、`confirm` 和 `beforeunload`，包括保存后的“离开此网站”。需要扩展能力 `dialog-policy-v1`；作用域结束即撤销，不处理其他域名/标签页或需要输入的 `prompt`。新连接无法识别旧弹窗时限时退出，需使用原连接或手动取消。此策略不代替平台保存回执、草稿身份核对或发表授权。
+
+本地回归与隔离 Chromium 测试不等于真实视频号保存/发表验收。
+
+封面初次加载时，预览或编辑入口 20 秒仍不可用，CLI 会核对原草稿 ID、描述和无封面副作用的状态，最多重开同一草稿 3 次，仍共用整次 timeout；不重传视频、不新建草稿。已上传/确认任一封面、出现未记录弹窗或卡片变化时不刷新，以保留未保存内容。两张默认封面均加载后才记录初始身份，不把空对象当基线。

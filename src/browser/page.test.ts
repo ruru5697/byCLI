@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { fetchDaemonStatusMock, sendCommandMock, sendCommandFullMock } = vi.hoisted(() => ({
+const { fetchDaemonStatusMock, sendCommandMock, sendCommandFullMock, sendCommandOnceMock } = vi.hoisted(() => ({
   fetchDaemonStatusMock: vi.fn(),
   sendCommandMock: vi.fn(),
   sendCommandFullMock: vi.fn(),
+  sendCommandOnceMock: vi.fn(),
 }));
 const { warnMock } = vi.hoisted(() => ({
   warnMock: vi.fn(),
@@ -13,6 +14,7 @@ vi.mock('./daemon-client.js', () => ({
   fetchDaemonStatus: fetchDaemonStatusMock,
   sendCommand: sendCommandMock,
   sendCommandFull: sendCommandFullMock,
+  sendCommandOnce: sendCommandOnceMock,
 }));
 vi.mock('../logger.js', () => ({
   log: {
@@ -21,6 +23,36 @@ vi.mock('../logger.js', () => ({
 }));
 
 import { Page } from './page.js';
+
+describe('Page scoped dialog acceptance', () => {
+  beforeEach(() => {
+    sendCommandFullMock.mockReset(); sendCommandOnceMock.mockReset(); sendCommandMock.mockReset();
+    sendCommandFullMock.mockResolvedValue({ page: 'target-a', data: {} });
+    sendCommandOnceMock.mockResolvedValue({ accepted: 2, beforeUnload: 1 });
+  });
+  it.each([false, true])('pins the scope and cleans up after callback failure=%s', async fail => {
+    const page = new Page('publisher');
+    const result = page.withAcceptedDialogs('https://channels.weixin.qq.com', async () => {
+      await page.evaluate('document.title');
+      if (fail) throw Error('operation failed');
+      return 'done';
+    });
+    if (fail) await expect(result).rejects.toThrow('operation failed');
+    else await expect(result).resolves.toBe('done');
+    const start = sendCommandFullMock.mock.calls[0][1];
+    expect(start).toMatchObject({ op: 'start', dialogOrigin: 'https://channels.weixin.qq.com' });
+    expect(sendCommandMock).toHaveBeenCalledWith('exec', expect.objectContaining({ page: 'target-a', dialogToken: start.dialogToken }));
+    expect(sendCommandOnceMock).toHaveBeenCalledWith('dialog-policy', expect.objectContaining({ op: 'stop', dialogToken: start.dialogToken }));
+    await page.evaluate('1');
+    expect(sendCommandMock.mock.lastCall?.[1].dialogToken).toBeUndefined();
+  });
+  it('does not fall back to a different tab after a stale identity under an accepting policy', async () => {
+    const page = new Page('publisher');
+    sendCommandFullMock.mockResolvedValueOnce({ page: 'target-a', data: {} }).mockRejectedValueOnce(Error('Page not found: target-a — stale page identity'));
+    await expect(page.withAcceptedDialogs('https://channels.weixin.qq.com', () => page.goto('https://channels.weixin.qq.com/platform/post/draftListManager'))).rejects.toThrow('stale page identity');
+    expect(sendCommandFullMock).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe('Page.consoleMessages', () => {
   beforeEach(() => { fetchDaemonStatusMock.mockReset(); sendCommandMock.mockReset(); });
