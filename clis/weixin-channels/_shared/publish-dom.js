@@ -15,7 +15,7 @@ export function inspectPublishPage(action, operationId, expectedAi) {
   };
   const visible = el => displayed(el, true);
   if (location.origin !== 'https://channels.weixin.qq.com') return { error: 'wrong_origin' };
-  if (/\/login(?:\/|$)/.test(location.pathname)) return { error: 'login_required' };
+  if (/\/login(?:\.html)?(?:\/|$)/i.test(location.pathname)) return { error: 'login_required' };
   const inputs = roots.flatMap(r => [...r.querySelectorAll('input[type="file"]')])
     .filter(x => /video/i.test(x.getAttribute('accept') || ''));
   if (location.pathname !== '/platform/post/create') return { error: 'wrong_editor_path', path: location.pathname };

@@ -308,9 +308,13 @@ export async function publishVideo(page, args) {
         op.target = args['editor-page']; op.editor_session = args['editor-session']; await save(file, op);
       } else if (mode !== 'resume') {
         // A retained journal is never permission to upload again.
-        if (op && mode === 'prepare') {
+        const authResume = op && mode === 'prepare' && op.authentication_required === true && op.upload_attempted === false
+          && !op.file_selected && !op.submitted && !op.draft_save_attempted && !op.source_draft_id
+          && ['preparing', 'preparation_unknown'].includes(op.status);
+        if (op && mode === 'prepare' && !authResume) {
           return result({ ...op, message: 'Existing operation retained; inspect its status instead of uploading again' });
         }
+        if (authResume && (args.description !== op.description || args['ai-generated'] !== op.ai_generated)) throw new ArgumentError('Authentication recovery must retain the original description and AI declaration');
         if (mode === 'retry-upload') {
           if (!op || op.submitted || !['preparing', 'preparation_unknown'].includes(op.status) || !op.target) throw new CommandExecutionError('Explicit upload retry requires an unsubmitted interrupted operation');
           page.setActivePage(args['editor-page'] || op.target);
@@ -324,6 +328,7 @@ export async function publishVideo(page, args) {
         const hash = createHash('sha256');
         for await (const chunk of createReadStream(media)) hash.update(chunk);
         const sha256 = hash.digest('hex');
+        if (authResume && op.sha256 !== sha256) throw new ArgumentError('Original video hash changed; refusing authentication recovery');
         if (mode === 'retry-upload') {
           if (op.sha256 !== sha256) throw new CommandExecutionError('Original video hash changed; refusing upload retry');
           op.upload_retries = [...(op.upload_retries || []), { at: new Date().toISOString(), previous_status: op.status }];
@@ -332,13 +337,24 @@ export async function publishVideo(page, args) {
             op.target = args['editor-page']; op.editor_session = args['editor-session'];
           }
           op.status = 'preparing'; op.file_selected = false; op.description_filled = false;
-        } else op = { version: 1, operation_id: randomUUID(), created_at: new Date().toISOString(),
+        } else if (!authResume) op = { version: 1, operation_id: randomUUID(), created_at: new Date().toISOString(),
           description: args.description, ai_generated: args['ai-generated'], sha256,
           ...((args.cover || args['vertical-cover']) ? { cover: await requestedCovers(args) } : {}),
-          status: 'preparing', submitted: false };
+          status: 'preparing', submitted: false, upload_attempted: false };
         await save(file, op);
         const load = await wait.stage('video-editor-load', 30);
-        if (mode === 'prepare') await page.goto(CREATE_URL, { stealth: false });
+        let navigateToEditor = mode === 'prepare';
+        if (authResume) {
+          if (!op.target) throw new CommandExecutionError('Authentication recovery requires the retained page identity');
+          page.setActivePage(op.target);
+          const before = await page.evaluate(publishScript('status', op.operation_id, op.ai_generated));
+          const safeLanding = before?.error === 'login_required' || before?.error === 'wrong_editor_path' && ['/', '/platform', '/platform/'].includes(before.path);
+          if (!before || before.blocked || before.error && !safeLanding && before.error !== 'editor_loading') throw new CommandExecutionError('Authentication recovery requires the original login or editor page');
+          if (!before.error && (before.draft_id || before.input_files.length || before.videos.length || before.description?.trim())) throw new CommandExecutionError('Authentication recovery requires an empty editor; retain existing content without uploading');
+          // Never refresh an existing editor to manufacture an empty page.
+          navigateToEditor = safeLanding;
+        }
+        if (navigateToEditor) await page.goto(CREATE_URL, { stealth: false });
         op.target = page.getActivePage?.();
         if (!op.target) throw new CommandExecutionError('Browser page identity is required');
         if (!op.editor_session) await page.focusWindow?.();
@@ -349,14 +365,23 @@ export async function publishVideo(page, args) {
           if (state?.error !== 'editor_loading') break;
           await page.wait(0.5);
         } while (Date.now() < wait.deadline);
-        if (state?.error === 'login_required') throw new AuthRequiredError('channels.weixin.qq.com');
+        if (state?.error === 'login_required') {
+          // Persist proof that authentication stopped preparation before file
+          // selection. A confirmed rerun may perform the first upload only.
+          if (op.upload_attempted === false) { op.authentication_required = true; await save(file, op); }
+          throw new AuthRequiredError('channels.weixin.qq.com');
+        }
         if (!state || state.error) throw new CommandExecutionError('Video editor did not become available');
+        if (authResume && (state.draft_id || state.input_files.length || state.videos.length || state.description?.trim())) throw new CommandExecutionError('Authentication recovery requires an empty editor; retain existing content without uploading');
         op.editor_url = state.url;
         if (state.blocked) { op.status = 'requires_user_action'; op.message = 'Inspect login, verification or account permissions'; await save(file, op); return result(op); }
         const input = await inspect(page, 'input', op);
         if (!input.selector) throw new CommandExecutionError('Unique video upload control not found');
         await wait.stage('video-file-selection', 60);
-        wait.assertRemaining(); await page.uploadFiles(input.selector, [media]);
+        // Write intent before the RPC: a missing reply cannot be mistaken for
+        // a login-only failure or permission to repeat the upload.
+        wait.assertRemaining(); op.upload_attempted = true; op.status = 'preparing'; delete op.authentication_required; await save(file, op);
+        await page.uploadFiles(input.selector, [media]);
         op.file_selected = true;
         await save(file, op);
       } else {
