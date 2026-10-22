@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { MockWebSocket } = vi.hoisted(() => {
   class MockWebSocket {
@@ -198,5 +198,52 @@ describe('CDP console capture', () => {
     expect(await page.consoleMessages('warning')).toEqual([messages[0]]);
     await bridge.close();
     vi.unstubAllEnvs();
+  });
+});
+
+
+describe('direct CDP single-attempt cover capabilities', () => {
+  const bridges: CDPBridge[] = [];
+  beforeEach(() => vi.stubEnv('BYCLI_CDP_ENDPOINT', 'ws://127.0.0.1:9222/devtools/page/cover'));
+  afterEach(async () => { for (const bridge of bridges.splice(0)) await bridge.close(); vi.unstubAllEnvs(); });
+  async function setup() {
+    const bridge = new CDPBridge(); bridges.push(bridge);
+    const send = vi.spyOn(bridge, 'send').mockResolvedValue({});
+    const page = await bridge.connect(); send.mockClear(); return { send, page };
+  }
+  it('exposes single-attempt evaluation and propagates a destroyed context without replay', async () => {
+    const { send, page } = await setup();
+    send.mockRejectedValueOnce(new Error('Execution context was destroyed'));
+    await expect(page.evaluateOnce!('document.title')).rejects.toThrow('Execution context was destroyed');
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith('Runtime.evaluate', expect.objectContaining({ returnByValue: true, awaitPromise: true }));
+  });
+  it('returns the evaluation result and propagates page exceptions', async () => {
+    const { send, page } = await setup();
+    send.mockResolvedValueOnce({ result: { value: { reserved: true } } });
+    expect(await page.evaluateOnce!('({ reserved: true })')).toEqual({ reserved: true });
+    send.mockResolvedValueOnce({ exceptionDetails: { exception: { description: 'reservation failed' } } });
+    await expect(page.evaluateOnce!('throw new Error()')).rejects.toThrow('reservation failed');
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+  it('sends one mouse gesture with a release and no transport retries', async () => {
+    const { send, page } = await setup();
+    await page.nativeClickOnce!(100, 200);
+    expect(send.mock.calls.map(([, p]) => p?.type)).toEqual(['mouseMoved', 'mousePressed', 'mouseReleased']);
+    for (const [method, params] of send.mock.calls) {
+      expect(method).toBe('Input.dispatchMouseEvent'); expect(params).toMatchObject({ x: 100, y: 200 });
+    }
+    expect(send.mock.calls[2][1]).toMatchObject({ button: 'left', buttons: 0 });
+  });
+  it.each([0, 1, 2])('does not replay an uncertain gesture at step %s', async step => {
+    const { send, page } = await setup();
+    for (let n = 0; n < step; n++) send.mockResolvedValueOnce({});
+    send.mockRejectedValueOnce(new Error('response lost'));
+    await expect(page.nativeClickOnce!(100, 200)).rejects.toThrow('response lost');
+    expect(send.mock.calls.map(([, p]) => p?.type)).toEqual(step === 0 ? ['mouseMoved'] : ['mouseMoved', 'mousePressed', 'mouseReleased']);
+  });
+  it.each([[NaN, 1], [-1, 1], [1, Infinity]])('rejects invalid click coordinates %s/%s before dispatch', async (x, y) => {
+    const { send, page } = await setup();
+    await expect(page.nativeClickOnce!(x, y)).rejects.toThrow('coordinates'); expect(send).not.toHaveBeenCalled();
   });
 });

@@ -3,6 +3,9 @@
  */
 
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { validateMp4File } from './media-validation.js';
+export { validateMp4File } from './media-validation.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -27,6 +30,8 @@ export interface DownloadOptions {
   maxRedirects?: number;
   /** Reject empty or document responses before replacing the destination. Opt-in for media callers. */
   validateMedia?: boolean;
+  /** Require a complete MP4 container with a video track. */
+  expectedMedia?: 'mp4';
 }
 
 export interface YtdlpOptions {
@@ -89,119 +94,97 @@ export async function httpDownload(
   options: DownloadOptions = {},
   redirectCount = 0,
 ): Promise<{ success: boolean; size: number; error?: string }> {
-  const { cookies, headers = {}, timeout = 30000, onProgress, maxRedirects = 10 } = options;
-
-  const requestHeaders: Record<string, string> = {
+  const { timeout = 30000, onProgress, maxRedirects = 10 } = options;
+  let requestHeaders: Record<string, string> = {
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
-    ...headers,
+    ...options.headers,
+    ...(options.cookies ? { Cookie: options.cookies } : {}),
   };
-
-  if (cookies) {
-    requestHeaders['Cookie'] = cookies;
-  }
-
-  const tempPath = `${destPath}.tmp`;
-
-  const cleanupTempFile = async () => {
-    try {
-      await fs.promises.rm(tempPath, { force: true });
-    } catch {
-      // Ignore cleanup errors so the original failure is preserved.
-    }
-  };
-
+  // A distinct sibling file prevents concurrent jobs from deleting each other's work.
+  const tempPath = `${destPath}.${randomUUID()}.tmp`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
+  let response: Response | undefined;
   try {
-    const response = await fetchWithNodeNetwork(url, {
-      headers: requestHeaders,
-      signal: controller.signal,
-      redirect: 'manual',
-    });
-    clearTimeout(timer);
-
-    // Handle redirects before creating any file handles.
-    if (response.status >= 300 && response.status < 400) {
+    let currentUrl = url;
+    for (let redirects = redirectCount; ; redirects++) {
+      const parsed = new URL(currentUrl);
+      if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('Unsupported download protocol');
+      response = await fetchWithNodeNetwork(currentUrl, {
+        headers: requestHeaders, signal: controller.signal, redirect: 'manual',
+      });
+      if (response.status < 300 || response.status >= 400) break;
       const location = response.headers.get('location');
-      if (location) {
-        if (redirectCount >= maxRedirects) {
-          return { success: false, size: 0, error: `Too many redirects (> ${maxRedirects})` };
-        }
-        const redirectUrl = resolveRedirectUrl(url, location);
-        const originalHost = new URL(url).hostname;
-        const redirectHost = new URL(redirectUrl).hostname;
-        const redirectOptions = originalHost === redirectHost
-          ? options
-          : { ...options, cookies: undefined, headers: stripCookieHeaders(options.headers) };
-        return httpDownload(
-          redirectUrl,
-          destPath,
-          redirectOptions,
-          redirectCount + 1,
-        );
+      if (!location) break;
+      await response.body?.cancel();
+      if (redirects >= maxRedirects) throw new Error(`Too many redirects (> ${maxRedirects})`);
+      const nextUrl = new URL(location, currentUrl);
+      if (parsed.origin !== nextUrl.origin) {
+        requestHeaders = Object.fromEntries(Object.entries(requestHeaders).filter(([key]) =>
+          !['cookie', 'authorization', 'proxy-authorization'].includes(key.toLowerCase())));
       }
+      currentUrl = nextUrl.toString();
     }
-
-    if (response.status !== 200) {
-      return { success: false, size: 0, error: `HTTP ${response.status}` };
+    if (response.status !== 200) throw new Error(`HTTP ${response.status}`);
+    if (!response.body) throw new Error('Empty response body');
+    const totalSize = Number(response.headers.get('content-length')) || 0;
+    const validateMedia = options.validateMedia || options.expectedMedia;
+    const contentType = (response.headers.get('content-type') || '').toLowerCase();
+    if (validateMedia && /mpegurl|dash\+xml/.test(contentType)) {
+      throw new Error('Unsupported media playlist (HLS/DASH); expected a direct media file');
     }
-
-    if (!response.body) {
-      return { success: false, size: 0, error: 'Empty response body' };
-    }
-
-    const totalSize = parseInt(response.headers.get('content-length') || '0', 10);
     let received = 0;
     let prefix = Buffer.alloc(0);
     const progressStream = new Transform({
       transform(chunk, _encoding, callback) {
         received += chunk.length;
-        if (options.validateMedia && prefix.length < 512) {
+        if (validateMedia && prefix.length < 512) {
           prefix = Buffer.concat([prefix, Buffer.from(chunk).subarray(0, 512 - prefix.length)]);
+          const text = prefix.toString('utf8').trimStart();
+          if (/^#EXTM3U/i.test(text) || /<(?:\w+:)?MPD(?:\s|>)/i.test(text)) {
+            callback(new Error('Unsupported media playlist (HLS/DASH); expected a direct media file'));
+            return;
+          }
         }
-        if (onProgress) onProgress(received, totalSize);
-        callback(null, chunk);
+        try { onProgress?.(received, totalSize); callback(null, chunk); }
+        catch (err) { callback(err as Error); }
       },
     });
-
-    try {
-      await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
-      await pipeline(
-        Readable.fromWeb(response.body as unknown as WebReadableStream),
-        progressStream,
-        fs.createWriteStream(tempPath),
-      );
-      if (options.validateMedia) {
-        const contentType = (response.headers.get('content-type') || '').toLowerCase();
-        const textPrefix = prefix.toString('utf8').trimStart();
-        if (received === 0) throw new Error('Empty media response');
-        if (/^(text\/|application\/(json|xml|xhtml))/.test(contentType)
-            || /^(?:<!doctype\s+html|<html|<head|<body|<script|<\?xml|\{|\[)/i.test(textPrefix)) {
-          throw new Error('Expected media but received a document response');
-        }
+    await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
+    await pipeline(
+      Readable.fromWeb(response.body as unknown as WebReadableStream),
+      progressStream,
+      fs.createWriteStream(tempPath, { flags: 'wx' }),
+      { signal: controller.signal },
+    );
+    if (validateMedia) {
+      if (received === 0) throw new Error('Empty media response');
+      const textPrefix = prefix.toString('utf8').trimStart();
+      if (/^(text\/|application\/(json|xml|xhtml))/.test(contentType)
+          || /^(?:<!doctype\s+html|<html|<head|<body|<script|<\?xml|\{|\[)/i.test(textPrefix)) {
+        throw new Error('Expected media but received a document response');
       }
-      await fs.promises.rename(tempPath, destPath);
-      return { success: true, size: received };
-    } catch (err) {
-      await cleanupTempFile();
-      return { success: false, size: 0, error: getErrorMessage(err) };
     }
+    // Content-Encoding may make the decompressed body differ from Content-Length.
+    if (totalSize && !response.headers.get('content-encoding') && totalSize !== received) {
+      throw new Error('Incomplete download: Content-Length mismatch');
+    }
+    if (options.expectedMedia === 'mp4') await validateMp4File(tempPath, controller.signal);
+    controller.signal.throwIfAborted();
+    await fs.promises.rename(tempPath, destPath);
+    return { success: true, size: received };
   } catch (err) {
+    return { success: false, size: 0, error: controller.signal.aborted
+      ? `Download timed out after ${timeout}ms` : getErrorMessage(err) };
+  } finally {
     clearTimeout(timer);
-    await cleanupTempFile();
-    return { success: false, size: 0, error: err instanceof Error ? err.message : String(err) };
+    if (response?.body && !response.body.locked) await response.body.cancel().catch(() => {});
+    await fs.promises.rm(tempPath, { force: true }).catch(() => {});
   }
 }
 
 export function resolveRedirectUrl(currentUrl: string, location: string): string {
   return new URL(location, currentUrl).toString();
-}
-
-function stripCookieHeaders(headers?: Record<string, string>): Record<string, string> | undefined {
-  if (!headers) return headers;
-  return Object.fromEntries(
-    Object.entries(headers).filter(([key]) => key.toLowerCase() !== 'cookie'),
-  );
 }
 
 /**

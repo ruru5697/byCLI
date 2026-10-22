@@ -3,8 +3,8 @@ import { log } from '@sovovs/bycli/logger';
 
 // One deadline for the whole browser operation. Stage transitions do not renew
 // it. Only previously unseen business observations count as progress; polling,
-// timestamps and repeating A/B states are not progress. Only the total deadline
-// stops polling: the platform may legitimately process without visible updates.
+// timestamps and repeating A/B states are not progress. Processing uses the total
+// deadline; control responses may opt into a shorter no-progress limit.
 export function publishWait(timeout, { onUpdate = async () => {}, heartbeat = false } = {}) {
   const started = Date.now(), deadline = started + timeout * 1000;
   let snapshot, reportedAt = started;
@@ -30,7 +30,7 @@ export function publishWait(timeout, { onUpdate = async () => {}, heartbeat = fa
     async finish() {
       if (snapshot) { snapshot = { ...snapshot, status: 'completed' }; await onUpdate(snapshot); }
     },
-    async stage(name) {
+    async stage(name, idleSeconds = Infinity) {
       assertRemaining();
       const seen = new Set();
       let progressed = Date.now(), nextReport = progressed;
@@ -40,13 +40,17 @@ export function publishWait(timeout, { onUpdate = async () => {}, heartbeat = fa
         if (!seen.has(signature)) { seen.add(signature); progressed = now; }
         snapshot = { stage: name, status: 'waiting', elapsed_seconds: Math.floor((now - started) / 1000),
           idle_seconds: Math.floor((now - progressed) / 1000), timeout_seconds: timeout,
+          ...(Number.isFinite(idleSeconds) ? { idle_timeout_seconds: idleSeconds } : {}),
           last_progress_at: new Date(progressed).toISOString(), observation };
-        if (now >= nextReport) {
+        const stalled = now - progressed >= idleSeconds * 1000;
+        if (now >= nextReport || stalled) {
           reportedAt = now;
           await onUpdate(snapshot);
           log.info(`Weixin Channels progress: ${JSON.stringify(snapshot)}`);
           nextReport = now + 15000;
         }
+        if (stalled) throw new TimeoutError(`Weixin Channels ${name}: no progress`, idleSeconds,
+          `last_state=${JSON.stringify(observation)}; retain the editor and original operation, do not repeat writes`);
       };
       // Persist the stage before entering a potentially slow browser RPC.
       await observe({ state: 'starting' });

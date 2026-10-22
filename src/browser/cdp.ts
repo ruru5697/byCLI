@@ -414,6 +414,11 @@ class CDPPage extends BasePage {
     return result.result?.value;
   }
 
+  /** The direct CDP transport sends once and never retries an evaluation. */
+  async evaluateOnce(js: string): Promise<unknown> {
+    return this.evaluate(js);
+  }
+
   async getCookies(opts: { domain?: string; url?: string } = {}): Promise<BrowserCookie[]> {
     const result = await this.bridge.send('Network.getCookies', opts.url ? { urls: [opts.url] } : {});
     const cookies = isRecord(result) && Array.isArray(result.cookies) ? result.cookies : [];
@@ -605,6 +610,21 @@ class CDPPage extends BasePage {
       button: 'left',
       clickCount: 1,
     });
+  }
+
+  /** Finish one pointer gesture, including release after a lost press reply. */
+  async nativeClickOnce(x: number, y: number): Promise<void> {
+    if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0) {
+      throw new Error('Native click requires finite nonnegative viewport coordinates');
+    }
+    const dispatch = (params: Record<string, unknown>) => this.bridge.send('Input.dispatchMouseEvent', { x, y, ...params });
+    await dispatch({ type: 'mouseMoved' });
+    let pressError: unknown;
+    try { await dispatch({ type: 'mousePressed', button: 'left', buttons: 1, clickCount: 1 }); }
+    catch (error) { pressError = error; }
+    try { await dispatch({ type: 'mouseReleased', button: 'left', buttons: 0, clickCount: 1 }); }
+    catch (error) { if (!pressError) throw error; }
+    if (pressError) throw pressError;
   }
 
   async nativeType(text: string): Promise<void> {

@@ -1674,7 +1674,7 @@ async function handleNavigateUnlocked(cmd: Command, leaseKey: string): Promise<R
   // - the URL matches the target (handles same-URL / canonicalized navigations), OR
   // - the URL differs from the pre-navigation URL (handles redirects).
   let timedOut = false;
-  await new Promise<void>((resolve) => {
+  if (cmd.waitUntil !== 'none') await new Promise<void>((resolve) => {
     let settled = false;
     let checkTimer: ReturnType<typeof setTimeout> | null = null;
     let blockTimer: ReturnType<typeof setInterval> | null = null;

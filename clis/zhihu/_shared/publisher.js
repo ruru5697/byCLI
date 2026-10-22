@@ -1,5 +1,6 @@
 import { requirePublishConfirmation } from '../../_shared/publish-confirmation.js';
 import { ArgumentError, AuthRequiredError, CommandExecutionError, TimeoutError } from '@sovovs/bycli/errors';
+import { log } from '@sovovs/bycli/logger';
 import { answerDraftCommand } from '../answer-waiting-draft.js';
 import { inspectDraftPage, draftScript, resolveDraftOptions, normalizeDraftText } from '../draft-shared.js';
 import { articlePersisted } from './article-draft-read.js';
@@ -24,33 +25,61 @@ export function validateWrite(args, preparing = false) {
     if (!Number.isInteger(args.timeout ?? 120) || (args.timeout ?? 120) < 1 || (args.timeout ?? 120) > 1800) throw new ArgumentError('--timeout must be 1–1800 seconds');
     if (preparing && !['yes', 'no'].includes(args['ai-generated'])) throw new ArgumentError('--ai-generated must explicitly be yes or no');
 }
-async function inspect(page, op, action = 'status') {
+async function inspect(page, op, action = 'status', allowCreatorTransition = false) {
     const s = await page.evaluate(publisherScript(op.kind, action, op));
     if (s?.error === 'auth') throw new AuthRequiredError('zhihu.com');
+    if (allowCreatorTransition && s?.error === 'wrong_editor' && /^https:\/\/www\.zhihu\.com\/creator\/?(?:\?|$)/.test(s.url || '')) return s;
     if (!s || s.error) throw new CommandExecutionError(`Zhihu ${op.kind} editor unavailable: ${s?.error || 'invalid response'}`);
     return s;
 }
-async function waitFor(page, op, args, predicate, action = 'status') {
-    const deadline = Date.now() + (args.timeout ?? 120) * 1000;
-    let lastState;
+async function waitFor(page, op, args, predicate, action = 'status', options = {}) {
+    const started = Date.now(), timeout = args.timeout ?? 120;
+    const deadline = started + timeout * 1000, stage = options.stage || action;
+    let lastState, stableMismatch, stableSince, nextProgress = started + 15000;
+    const describe = s => `ready=${!!s?.ready}, save=${s?.save_state || 'unavailable'}, draft_id=${s?.draft_id || op.draft_id || 'unknown'}, mismatched_fields=${contentDifferences(s, op, options.verifyDraftId).join(',') || 'none'}`;
+    log.info(`[zhihu:${op.kind}] ${stage}: waiting (limit ${timeout}s)`);
     for (let n = 0; n < (args.timeout ?? 120) * 2; n++) {
         let s;
-        try { s = await inspect(page, op, action); }
+        try { s = await inspect(page, op, action, options.creatorTransition && Date.now() - started < 5000); }
         catch (e) { if (!/editor_loading/.test(e.message)) throw e; }
         lastState = s;
         if (s?.blocked) throw new CommandExecutionError('Editor requires manual verification or agreement review; inspect the retained tab');
-        if (s && await predicate(s)) return s;
+        if (s?.save_state === 'failed') throw new CommandExecutionError(`Zhihu ${stage}: platform reports draft save failure; retain this operation and editor`);
+        if (s && await predicate(s)) {
+            log.info(`[zhihu:${op.kind}] ${stage}: complete (${Math.round((Date.now() - started) / 1000)}s)`);
+            return s;
+        }
+        const differences = options.verifyContent && s?.ready && s.saved && s.images_ready ? contentDifferences(s, op, options.verifyDraftId) : [];
+        if (differences.length) {
+            // A saved, loaded draft with unchanged conflicting contents is not
+            // an upload still in progress. Reset the grace period on any change.
+            const signature = JSON.stringify([differences, s.title, s.body, s.draft_id, s.image_count, s.image_keys, s.cover_key]);
+            if (signature !== stableMismatch) { stableMismatch = signature; stableSince = Date.now(); }
+            if (Date.now() - stableSince >= 5000) throw new CommandExecutionError(`Zhihu ${stage}: saved draft content mismatch stable for 5s; ${describe(s)}; inspect the existing draft, do not upload again`);
+        } else { stableMismatch = null; stableSince = null; }
+        if (Date.now() >= nextProgress) {
+            log.info(`[zhihu:${op.kind}] ${stage}: ${Math.round((Date.now() - started) / 1000)}s elapsed; ${describe(s)}`);
+            nextProgress = Date.now() + 15000;
+        }
         if (Date.now() >= deadline) break;
         await page.wait(0.5);
     }
-    throw new TimeoutError('Zhihu draft/editor verification', args.timeout ?? 120, `Last save state: ${lastState?.save_state || 'unavailable'}; inspect the existing journal/tab, do not create another operation`);
+    throw new TimeoutError(`Zhihu ${stage}`, timeout, `Last state: ${describe(lastState)}; inspect the existing journal/tab, do not create another operation`);
 }
 const assetKey = value => value?.match(/v2-[a-f0-9]+/i)?.[0] || value;
+function contentDifferences(s, op, verifyDraftId = false) {
+    if (!s?.ready) return [];
+    const differences = [];
+    if (verifyDraftId && op.draft_id && s.draft_id !== op.draft_id) differences.push('draft_id');
+    if (op.kind !== 'answer' && s.title !== op.title) differences.push('title');
+    if (normalizeDraftText(s.body) !== normalizeDraftText(op.body)) differences.push('body');
+    if (s.image_count !== op.image_count) differences.push('image_count');
+    if (op.image_keys && JSON.stringify(s.image_keys?.map(assetKey)) !== JSON.stringify(op.image_keys.map(assetKey))) differences.push('image_keys');
+    if (op.cover_key && assetKey(s.cover_key) !== assetKey(op.cover_key)) differences.push('cover');
+    return differences;
+}
 function sameContent(s, op) {
-    return s.ready && !s.blocked && normalizeDraftText(s.body) === normalizeDraftText(op.body)
-        && (op.kind === 'answer' || s.title === op.title) && s.image_count === op.image_count && s.images_ready
-        && (!op.image_keys || JSON.stringify(s.image_keys?.map(assetKey)) === JSON.stringify(op.image_keys.map(assetKey)))
-        && (!op.cover_key || assetKey(s.cover_key) === assetKey(op.cover_key));
+    return s.ready && !s.blocked && s.images_ready && contentDifferences(s, op).length === 0;
 }
 async function fill(page, op, action, value) {
     const s = await inspect(page, op, action);
@@ -109,7 +138,7 @@ export async function prepareDraft(page, args, kind) {
             op.browser_target = page.getActivePage?.();
             op.author_identity = await currentAccount(page); await saveOperation(file, op);
             await page.focusWindow?.();
-            const initial = await waitFor(page, op, args, s => kind === 'video' ? !!s.selector : s.ready, kind === 'video' ? 'upload' : 'status');
+            const initial = await waitFor(page, op, args, s => kind === 'video' ? !!s.selector : s.ready, kind === 'video' ? 'upload' : 'status', { stage: 'open-editor' });
             if (initial.body || initial.title || initial.image_count || initial.draft_id) throw new CommandExecutionError('New editor contains existing content; refusing to overwrite it');
             await inspect(page, op, 'bind');
             const captureStarted = Date.now();
@@ -118,7 +147,7 @@ export async function prepareDraft(page, args, kind) {
                 await page.readNetworkCapture?.();
                 await page.uploadFiles(initial.selector, [video.path]);
                 op.file_selected = true; await saveOperation(file, op);
-                await waitFor(page, op, args, s => s.ready);
+                await waitFor(page, op, args, s => s.ready, 'status', { stage: 'video-upload' });
             }
             await fill(page, op, 'title', op.title); await fill(page, op, 'body', op.body);
             if (media.length) {
@@ -142,10 +171,19 @@ export async function prepareDraft(page, args, kind) {
                         }
                     }
                     if (draftIds.size > 1) throw new CommandExecutionError('More than one draft identity observed; refusing to guess');
-                    if (draftIds.size === 1) s.draft_id = [...draftIds][0];
+                    if (draftIds.size === 1) {
+                        s.draft_id = [...draftIds][0];
+                        // Keep the exact native receipt even when later content
+                        // verification fails, so recovery does not create a draft.
+                        if (!op.draft_id) {
+                            op.draft_id = s.draft_id;
+                            op.editor_url = `https://www.zhihu.com/upload-video?id=${s.draft_id}`;
+                            await saveOperation(file, op);
+                        }
+                    }
                 }
                 return sameContent(s, op) && s.saved && /^\d+$/.test(s.draft_id || '');
-            });
+            }, 'status', { stage: 'draft-save', verifyContent: true });
             op.draft_id = identified.draft_id;
             op.editor_url = kind === 'video' ? `https://www.zhihu.com/upload-video?id=${identified.draft_id}` : `https://zhuanlan.zhihu.com/p/${identified.draft_id}/edit`;
             op.image_keys = identified.image_keys; await saveOperation(file, op);
@@ -159,13 +197,15 @@ export async function prepareDraft(page, args, kind) {
             await setVideoOptions(page, op, args);
             // Declaration changes can leave the UI in saving state. Article
             // persistence is established by a fresh server draft read after reload.
-            const saved = await waitFor(page, op, args, s => sameContent(s, op) && s.ai_selected && (kind === 'article' || ['saved', 'not_shown'].includes(s.save_state)));
+            const saved = await waitFor(page, op, args, s => sameContent(s, op) && s.ai_selected && (kind === 'article' || ['saved', 'not_shown'].includes(s.save_state)), 'status', { stage: 'save-content', verifyContent: true });
             if (kind === 'article') { op.draft_id = saved.draft_id; op.editor_url = `https://zhuanlan.zhihu.com/p/${saved.draft_id}/edit`; }
             op.status = 'draft_saved'; op.message = 'Draft saved; verifying persistence by reopening its exact URL';
             await saveOperation(file, op);
             return await reopenDraft(page, args, file, op);
         } catch (e) {
-            op.status = 'preparation_unknown'; op.message = 'Preparation interrupted; inspect this operation and retained tab before continuing';
+            op.status = 'preparation_unknown'; op.verified = false;
+            op.message = e.message;
+            op.verification_error ??= { code: e.code || 'COMMAND_EXEC', message: e.message };
             await saveOperation(file, op); throw e;
         }
     });
@@ -206,22 +246,34 @@ export async function reopenDraft(page, args, file, op) {
     if (op.submitted || !op.editor_url || !op.draft_id) throw new CommandExecutionError('Only an identified unsubmitted draft can be reopened');
     const expected = op.kind === 'article' ? `https://zhuanlan.zhihu.com/p/${op.draft_id}/edit` : `https://www.zhihu.com/upload-video?id=${op.draft_id}`;
     if (op.editor_url !== expected) throw new ArgumentError('Unexpected persisted draft URL');
-    await page.goto('https://www.zhihu.com/creator', { stealth: false });
-    await page.startNetworkCapture?.();
-    await page.goto(expected, { stealth: false });
-    await page.focusWindow?.();
-    op.author_identity = await currentAccount(page, op.author_identity);
-    const restored = await waitFor(page, op, args, async s => sameContent(s, op) && s.draft_id === op.draft_id
-        && (op.kind === 'article' ? await articlePersisted(page, op) : s.saved));
-    if (op.kind === 'article') op.server_draft_verified_at = new Date().toISOString();
-    await inspect(page, op, 'bind');
-    // The article editor does not persist this declaration in the remote draft.
-    // Configure it after content readback and verify again at submission time.
-    await setVideoOptions(page, op, args);
-    op.browser_target = page.getActivePage?.(); op.status = 'draft_verified'; op.verified = true;
-    op.message = 'Unpublished draft content reopened and verified; declaration configured in retained editor';
-    op.image_count = restored.image_count;
-    await saveOperation(file, op); return operationResult(op);
+    op.verified = false; op.status = 'draft_saved';
+    op.message = 'Reopening the exact saved draft to verify its persisted contents';
+    delete op.verification_error;
+    await saveOperation(file, op);
+    log.info(`[zhihu:${op.kind}] reopen: opening draft ${op.draft_id}`);
+    try {
+        await page.goto('https://www.zhihu.com/creator', { stealth: false });
+        await page.startNetworkCapture?.();
+        await page.goto(expected, { stealth: false });
+        await page.focusWindow?.();
+        op.author_identity = await currentAccount(page, op.author_identity);
+        const restored = await waitFor(page, op, args, async s => sameContent(s, op) && s.draft_id === op.draft_id
+            && (op.kind === 'article' ? await articlePersisted(page, op) : s.saved), 'status',
+            { stage: 'reopen-content', verifyContent: true, verifyDraftId: true, creatorTransition: true });
+        if (op.kind === 'article') op.server_draft_verified_at = new Date().toISOString();
+        await inspect(page, op, 'bind');
+        // The article editor does not persist this declaration in the remote draft.
+        // Configure it after content readback and verify again at submission time.
+        await setVideoOptions(page, op, args);
+        op.browser_target = page.getActivePage?.(); op.status = 'draft_verified'; op.verified = true;
+        op.message = 'Unpublished draft content reopened and verified; declaration configured in retained editor';
+        op.image_count = restored.image_count;
+        await saveOperation(file, op); return operationResult(op);
+    } catch (e) {
+        op.verified = false; op.message = e.message;
+        op.verification_error = { stage: 'reopen-content', code: e.code || 'COMMAND_EXEC', message: e.message };
+        await saveOperation(file, op); throw e;
+    }
 }
 export async function manageDraft(page, args, kind) {
     validateWrite(args);

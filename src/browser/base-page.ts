@@ -764,7 +764,8 @@ export abstract class BasePage implements IPage {
       if (typeof cdp !== 'function') throw new Error('File upload requires native file input support.');
       await cdp.call(this, 'DOM.enable', {});
       type Node = { nodeId: number; children?: Node[]; shadowRoots?: Node[]; shadowRootType?: string };
-      const doc = await cdp.call(this, 'DOM.getDocument', { depth: -1, pierce: true }) as { root: Node };
+      const doc = await cdp.call(this, 'DOM.getDocument', { depth: -1, pierce: true }) as { root?: Node } | null;
+      if (typeof doc?.root?.nodeId !== 'number') throw new Error('DOM.getDocument returned no root node.');
       const roots: number[] = [];
       const visit = (node: Node) => {
         for (const root of node.shadowRoots ?? []) if (root.shadowRootType === 'open') { roots.push(root.nodeId); visit(root); }
@@ -773,15 +774,16 @@ export abstract class BasePage implements IPage {
       roots.push(doc.root.nodeId); visit(doc.root);
       const matches = new Set<number>();
       for (const nodeId of roots) {
-        const found = await cdp.call(this, 'DOM.querySelectorAll', { nodeId, selector }) as { nodeIds: number[] };
-        for (const id of found.nodeIds ?? []) matches.add(id);
+        const found = await cdp.call(this, 'DOM.querySelectorAll', { nodeId, selector }) as { nodeIds?: number[] } | null;
+        for (const id of found?.nodeIds ?? []) if (id > 0) matches.add(id);
       }
       if (matches.size !== 1) throw new Error(`File input selector must match exactly one element; got ${matches.size}`);
       target = [...matches][0];
-      const node = await cdp.call(this, 'DOM.describeNode', { nodeId: target }) as { node: { localName: string; attributes: string[] } };
-      const attrs = node.node.attributes;
-      const typeIndex = attrs.indexOf('type');
-      if (node.node.localName !== 'input' || typeIndex < 0 || attrs[typeIndex + 1]?.toLowerCase() !== 'file') throw new Error('Upload target is not an input[type=file]');
+      const node = await cdp.call(this, 'DOM.describeNode', { nodeId: target }) as { node?: { localName?: string; attributes?: string[] } } | null;
+      const attrs = node?.node?.attributes ?? [];
+      let inputType = '';
+      for (let i = 0; i < attrs.length; i += 2) if (attrs[i] === 'type') inputType = attrs[i + 1];
+      if (node?.node?.localName !== 'input' || inputType.toLowerCase() !== 'file') throw new Error('Upload target is not an input[type=file]');
     } catch (error) {
       throw Object.assign(new Error(error instanceof Error ? error.message : String(error)), { code: 'upload_not_started' });
     }

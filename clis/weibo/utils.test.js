@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { CommandExecutionError } from '@sovovs/bycli/errors';
-import { requireArrayEvaluateResult, requireObjectEvaluateResult, unwrapEvaluateResult } from './utils.js';
+import { ArgumentError, CommandExecutionError } from '@sovovs/bycli/errors';
+import { normalizeWeiboTarget, requireArrayEvaluateResult, requireObjectEvaluateResult, unwrapEvaluateResult } from './utils.js';
 
 describe('unwrapEvaluateResult (browser-bridge envelope normalization)', () => {
     it('returns the raw array unchanged when payload is already an array', () => {
@@ -32,5 +32,28 @@ describe('unwrapEvaluateResult (browser-bridge envelope normalization)', () => {
         expect(() => requireArrayEvaluateResult({ error: 'API error' }, 'weibo feed')).toThrow('weibo feed: API error');
         expect(requireObjectEvaluateResult({ uid: '42' }, 'weibo me')).toEqual({ uid: '42' });
         expect(() => requireObjectEvaluateResult([{ uid: '42' }], 'weibo me')).toThrow(CommandExecutionError);
+    });
+});
+
+describe('normalizeWeiboTarget', () => {
+    it('keeps numeric idstr values unchanged', () => {
+        expect(normalizeWeiboTarget('123456')).toMatchObject({ id: '123456', mblogid: null });
+    });
+
+    it('accepts bare short ids copied from the Weibo UI', () => {
+        expect(normalizeWeiboTarget('Rnvl93WBe')).toMatchObject({ id: null, mblogid: 'Rnvl93WBe' });
+    });
+
+    it('extracts mblogid from canonical post URLs and drops query noise', () => {
+        expect(normalizeWeiboTarget('https://weibo.com/42/AbC12?refer_flag=1001030103_'))
+            .toMatchObject({ id: null, mblogid: 'AbC12' });
+        expect(normalizeWeiboTarget('https://weibo.com/detail/AbC12#comment'))
+            .toMatchObject({ mblogid: 'AbC12' });
+    });
+
+    it('rejects empty, foreign-host and malformed targets', () => {
+        expect(() => normalizeWeiboTarget('')).toThrow(ArgumentError);
+        expect(() => normalizeWeiboTarget('https://example.com/42/AbC12')).toThrow(ArgumentError);
+        expect(() => normalizeWeiboTarget('https://weibo.com/42/')).toThrow(ArgumentError);
     });
 });

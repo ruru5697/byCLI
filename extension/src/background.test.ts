@@ -1760,6 +1760,41 @@ describe('background tab isolation', () => {
     expect(update).not.toHaveBeenCalled();
   });
 
+  it('returns from non-blocking navigation while the tab is still loading', async () => {
+    const { chrome, tabs } = createChromeMock();
+    tabs[0].url = 'https://before.example/';
+    tabs[0].status = 'loading';
+    chrome.tabs.update = vi.fn(async (tabId: number, change: { url?: string }) => {
+      const tab = tabs.find(entry => entry.id === tabId)!;
+      if (change.url) tab.url = change.url;
+      tab.status = 'loading';
+      return tab;
+    });
+    vi.stubGlobal('chrome', chrome);
+    vi.doMock('./cdp', () => ({
+      registerListeners: vi.fn(),
+      hasActiveNetworkCapture: vi.fn(() => false),
+      detach: vi.fn(async () => {}),
+      armFetchGuard: vi.fn(async () => ({ allow: () => true, blocked: [], observedIps: [] })),
+      disposeFetchGuard: vi.fn(async () => {}),
+    }));
+    const mod = await import('./background');
+    mod.__test__.setAutomationWindowId(adapterKey('twitter'), 1);
+    const result = await mod.__test__.handleNavigate(
+      { id: 'non-blocking', action: 'navigate', url: 'https://after.example/', waitUntil: 'none', session: adapterKey('twitter') },
+      adapterKey('twitter'),
+    );
+    expect(result).toMatchObject({ ok: true, data: { timedOut: false } });
+    expect(tabs[0].status).toBe('loading');
+    const updates = chrome.tabs.update.mock.calls.length;
+    const blocked = await mod.__test__.handleNavigate(
+      { id: 'blocked-non-blocking', action: 'navigate', url: 'http://127.0.0.1/private', waitUntil: 'none', session: adapterKey('twitter') },
+      adapterKey('twitter'),
+    );
+    expect(blocked).toMatchObject({ ok: false, errorCode: 'navigation_blocked_by_policy' });
+    expect(chrome.tabs.update).toHaveBeenCalledTimes(updates);
+  });
+
   it('keeps the debugger attached during navigation when network capture is active', async () => {
     const { chrome, tabs } = createChromeMock();
     const onUpdatedListeners: Array<(id: number, info: chrome.tabs.TabChangeInfo, tab: chrome.tabs.Tab) => void> = [];

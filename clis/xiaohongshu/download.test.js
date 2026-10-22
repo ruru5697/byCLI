@@ -52,12 +52,34 @@ describe('xiaohongshu download', () => {
         const shortUrl = 'http://xhslink.com/o/4MKEjsZnhCz';
         await command.func(page, { 'note-id': shortUrl, output: './out' });
         expect(page.goto.mock.calls[0][0]).toBe(shortUrl);
-        expect(mockDownloadMedia).toHaveBeenCalledWith([{ type: 'video', url: 'https://sns-video-hw.xhscdn.com/example.mp4' }], expect.objectContaining({
+        expect(mockDownloadMedia).toHaveBeenCalledWith([{ type: 'video', url: 'https://sns-video-hw.xhscdn.com/example.mp4', expectedMedia: 'mp4' }], expect.objectContaining({
             output: './out',
             subdir: '69bc166f000000001a02069a',
             filenamePrefix: '69bc166f000000001a02069a',
-            cookies: 'a=b',
+            headers: { Referer: 'https://www.xiaohongshu.com/' },
+            validateMedia: true,
         }));
+    });
+    it('filters out covers and alternate streams in video mode', async () => {
+        const page = createPageMock({ noteId: '69bc166f000000001a02069a', media: [
+            { type: 'video', url: 'https://sns-video.xhscdn.com/main.mp4' },
+            { type: 'video', url: 'https://sns-video.xhscdn.com/alternate.mp4' },
+            { type: 'image', url: 'https://ci.xiaohongshu.com/cover.jpg' },
+        ] });
+        await command.func(page, { 'note-id': 'https://www.xiaohongshu.com/explore/69bc166f000000001a02069a?xsec_token=test', type: 'video', output: './out' });
+        expect(mockDownloadMedia.mock.calls[0][0]).toEqual([{ type: 'video', url: 'https://sns-video.xhscdn.com/main.mp4', expectedMedia: 'mp4' }]);
+        expect(page.getCookies).not.toHaveBeenCalled();
+    });
+    it('returns an explicit failure when video mode encounters an image note', async () => {
+        const page = createPageMock({ media: [{ type: 'image', url: 'https://ci.xiaohongshu.com/cover.jpg' }] });
+        expect(await command.func(page, { 'note-id': 'https://www.xiaohongshu.com/explore/69bc166f000000001a02069a?xsec_token=test', type: 'video' }))
+            .toEqual([expect.objectContaining({ status: 'failed', size: 'No matching media found' })]);
+        expect(mockDownloadMedia).not.toHaveBeenCalled();
+    });
+    it('rejects invalid media type before navigating', async () => {
+        const page = createPageMock({});
+        await expect(command.func(page, { type: 'audio' })).rejects.toMatchObject({ code: 'ARGUMENT' });
+        expect(page.goto).not.toHaveBeenCalled();
     });
     it('preserves full note URL with xsec_token for navigation', async () => {
         const page = createPageMock({

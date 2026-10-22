@@ -7,9 +7,8 @@
  * Accepts a full xiaohongshu.com URL with xsec_token or an xhslink short link.
  */
 import { cli, Strategy } from '@sovovs/bycli/registry';
-import { formatCookieHeader } from '@sovovs/bycli/download';
 import { downloadMedia } from '@sovovs/bycli/download/media-download';
-import { CliError } from '@sovovs/bycli/errors';
+import { ArgumentError, CliError } from '@sovovs/bycli/errors';
 import { buildNoteUrl, parseNoteId } from './note-helpers.js';
 /**
  * Build the media-extraction IIFE. The note id is interpolated as a default
@@ -23,7 +22,7 @@ export function buildDownloadExtractJs(noteId) {
       (() => {
         const bodyText = document.body?.innerText || '';
         const result = {
-          noteId: '${noteId}',
+          noteId: ${JSON.stringify(noteId)},
           pageUrl: location.href,
           securityBlock: /安全限制|访问链接异常/.test(bodyText)
             || /website-login\\/error|error_code=300017|error_code=300031/.test(location.href),
@@ -76,7 +75,7 @@ export function buildDownloadExtractJs(noteId) {
           const state = window.__INITIAL_STATE__;
           const noteData = state?.note?.noteDetailMap || state?.note?.note || {};
           if (!noteData || typeof noteData !== 'object') return [];
-          const currentIds = [...new Set([result.noteId, '${noteId}'].filter(Boolean))];
+          const currentIds = [...new Set([result.noteId, ${JSON.stringify(noteId)}].filter(Boolean))];
           const notes = [];
           for (const id of currentIds) {
             const entry = noteData[id];
@@ -212,10 +211,16 @@ export const command = cli({
     navigateBefore: false,
     args: [
         { name: 'note-id', positional: true, required: true, help: 'Full Xiaohongshu note URL with xsec_token, or xhslink short link' },
+        { name: 'type', default: 'all', help: 'Media type: video, image, or all' },
+        { name: 'timeout', type: 'int', default: 120, help: 'Total file transfer timeout in seconds (1-3600)' },
         { name: 'output', default: './xiaohongshu-downloads', help: 'Output directory' },
     ],
-    columns: ['index', 'type', 'status', 'size'],
+    columns: ['index', 'type', 'status', 'size', 'path'],
     func: async (page, kwargs) => {
+        const timeout = kwargs.timeout === undefined ? 120 : Number(kwargs.timeout);
+        if (!Number.isInteger(timeout) || timeout < 1 || timeout > 3600) throw new ArgumentError('--timeout must be an integer from 1 to 3600 seconds');
+        const mediaType = kwargs.type || 'all';
+        if (!['all', 'video', 'image'].includes(mediaType)) throw new ArgumentError('--type must be video, image, or all');
         const rawInput = String(kwargs['note-id']);
         const output = kwargs.output;
         const noteId = parseNoteId(rawInput);
@@ -230,17 +235,22 @@ export const command = cli({
         if (!data || !data.media || data.media.length === 0) {
             return [{ index: 0, type: '-', status: 'failed', size: 'No media found' }];
         }
-        // Extract cookies for authenticated downloads
-        const cookies = formatCookieHeader(await page.getCookies({ domain: 'xiaohongshu.com' }));
+        // Page authentication stays in Chrome; do not send site cookies to media CDNs.
+        let media = data.media.filter(m => mediaType === 'all' || m.type === mediaType);
+        // A note's alternative streams are not separate videos. Download one preferred stream.
+        const video = media.find(m => m.type === 'video');
+        media = [...(video ? [{ ...video, expectedMedia: 'mp4' }] : []), ...media.filter(m => m.type === 'image')];
+        if (!media.length) return [{ index: 0, type: mediaType, status: 'failed', size: 'No matching media found' }];
         const resolvedNoteId = typeof data.noteId === 'string' && data.noteId.trim()
             ? data.noteId.trim()
             : noteId;
-        return downloadMedia(data.media, {
+        return downloadMedia(media, {
             output,
             subdir: resolvedNoteId,
-            cookies,
+            headers: { Referer: 'https://www.xiaohongshu.com/' },
+            validateMedia: true,
             filenamePrefix: resolvedNoteId,
-            timeout: 60000,
+            timeout: timeout * 1000,
         });
     },
 });

@@ -9,7 +9,7 @@ import { fetchPosts, fetchPostDetail } from './client.js';
 import { normalizePost, normalizeDetail, resolveDateRange } from './model.js';
 import { fetchManagementPost } from './management.js';
 import { publishWait, videoObservation } from './wait.js';
-import { savedDraftId, openSavedDraft } from './draft.js';
+import { savedDraftId, openSavedDraft, draftReceipt } from './draft.js';
 import { sameDescription } from './description.js';
 import { localCover, requestedCovers, coverSources, untouchedCover, configureCover, verifyCover, coverState, coverScript, sameCovers, reconcileConfirmedCover, recoverCoverProcessing } from './cover.js';
 
@@ -66,7 +66,7 @@ function result(op, editor = null) {
     editor_url: op.editor_url ?? CREATE_URL, public_url: null, description: op.description, ai_generated: op.ai_generated,
     message: op.message ?? '', metrics: op.metrics ?? null, analytics: op.analytics ?? null,
     editor: editor ?? (op.source_draft_id || op.wait || op.upload ? { draft_id: op.source_draft_id ?? null, wait: op.wait ?? null, wait_error: op.wait_error ?? null, upload: op.upload ?? null, next_action: op.next_action ?? null, verified_at: op.draft_verified_at ?? null,
-      ...(op.cover ? { custom_cover: { phase: op.cover.phase, saved: op.cover.saved === true, sources: Object.fromEntries(Object.entries(coverSources(op.cover)).map(([role, source]) => [role, { sha256: source.sha256 }])) } } : {}) } : null) }];
+      ...(op.cover ? { custom_cover: { phase: op.cover.phase, saved: op.cover.saved === true, activation: op.cover.activation ?? null, sources: Object.fromEntries(Object.entries(coverSources(op.cover)).map(([role, source]) => [role, { sha256: source.sha256 }])) } } : {}) } : null) }];
 }
 async function inspect(page, action, op) {
   const s = await page.evaluate(publishScript(action, op.operation_id, op.ai_generated));
@@ -83,9 +83,9 @@ async function locked(file, fn, onError) {
   finally { await lock.close(); await unlink(`${file}.lock`); }
 }
 
-async function verifySavedDraft(page, file, op, timeout, wait, retryCoverRole = null, reopenOpening = false) {
+async function verifySavedDraft(page, file, op, timeout, wait, retryCoverRole = null, reopenOpening = false, inspectOnly = false) {
   for (;;) {
-    try { return await verifySavedDraftOnce(page, file, op, timeout, wait, retryCoverRole, reopenOpening); }
+    try { return await verifySavedDraftOnce(page, file, op, timeout, wait, retryCoverRole, reopenOpening, inspectOnly); }
     catch (error) {
       const cover = op.cover;
       if (error.code !== 'COVER_NOT_READY' || !op.source_draft_id || op.submitted || !untouchedCover(cover)) throw error;
@@ -99,16 +99,17 @@ async function verifySavedDraft(page, file, op, timeout, wait, retryCoverRole = 
         || Object.entries(current.cards ?? {}).some(([role, id]) => cover.originalIdentities?.[role] && cover.originalIdentities[role] !== id)) throw new CommandExecutionError('Draft or cover state changed; refusing to refresh unsaved content');
       cover.reloads ??= []; cover.reloads.push({ at: new Date().toISOString(), reason: error.code });
       cover.phase = 'pending';
-      delete cover.originalIdentities;
+      delete cover.originalIdentities; reopenOpening = false;
       await save(file, op);
       await wait.stage(`cover-reload-${cover.reloads.length}-of-3`);
     }
   }
 }
 
-async function verifySavedDraftOnce(page, file, op, timeout, wait, retryCoverRole = null, reopenOpening = false) {
+async function verifySavedDraftOnce(page, file, op, timeout, wait, retryCoverRole = null, reopenOpening = false, inspectOnly = false) {
   if (reopenOpening && (op.cover?.phase !== 'opening' || op.cover.pending_thumb || op.cover.upload || op.cover.activation
     || op.cover.saved || op.cover.save_attempted || Object.keys(op.cover.completedRoles ?? {}).length)) throw new CommandExecutionError('Saved draft reopening requires proof that no cover upload, confirmation or save was attempted');
+  if (reopenOpening) for (const source of Object.values(coverSources(op.cover))) if ((await localCover(source.path)).sha256 !== source.sha256) throw new CommandExecutionError('Recorded cover file changed; refusing draft reopening');
   if (!reopenOpening && op.cover && op.cover.phase !== 'configured' && (op.cover.phase !== 'pending' || Object.keys(op.cover.completedRoles ?? {}).length)) {
     if (!op.target) throw new CommandExecutionError('Interrupted cover requires its retained editor');
     page.setActivePage(op.target);
@@ -117,6 +118,8 @@ async function verifySavedDraftOnce(page, file, op, timeout, wait, retryCoverRol
     await configureCover(page, op, () => save(file, op), timeout, wait, retryCoverRole);
     return saveCustomCoverDraft(page, file, op, timeout, wait);
   }
+  op.status = 'draft_saved'; delete op.draft_verified_at;
+  await save(file, op);
   await openSavedDraft(page, op, timeout, wait);
   const deadline = wait.deadline;
   const stage = await wait.stage('draft-reopen');
@@ -129,8 +132,9 @@ async function verifySavedDraftOnce(page, file, op, timeout, wait, retryCoverRol
       throw new CommandExecutionError('Reopened saved draft identity or content changed');
     }
     if (s.ready) {
+      const previousTarget = op.target;
       op.target = page.getActivePage?.() || op.target;
-      if (!s.ai_selected) {
+      if (!s.ai_selected && !inspectOnly) {
         const control = await inspect(page, 'ai', op);
         if (control.selector) await page.click(control.selector);
         await page.wait(0.25); continue;
@@ -138,15 +142,20 @@ async function verifySavedDraftOnce(page, file, op, timeout, wait, retryCoverRol
       if (reopenOpening) {
         const covers = await coverState(page, op);
         if (covers.dialog || covers.cropping || !sameCovers(op.cover.originalIdentities, covers.cards)) throw new CommandExecutionError('Reopened original cover cards changed');
-        op.cover.phase = 'pending'; await save(file, op);
+        op.cover.recoveries = [...(op.cover.recoveries || []), { at: new Date().toISOString(), from_phase: 'opening', method: 'exact-saved-draft-before-upload', previous_target: previousTarget, target: op.target }];
+        op.cover.phase = 'pending'; await save(file, op); reopenOpening = false;
       }
       if (op.cover && op.cover.phase !== 'configured') {
+        if (inspectOnly) throw new CommandExecutionError('Read-only draft verification cannot configure a cover');
         await configureCover(page, op, () => save(file, op), timeout, wait);
         return saveCustomCoverDraft(page, file, op, timeout, wait);
       }
       if (await verifyCover(page, op, true) === false) { await page.wait(0.5); continue; }
       if (op.cover && !op.cover.saved) {
-        if (!op.cover.save_attempted) return saveCustomCoverDraft(page, file, op, timeout, wait);
+        if (!op.cover.save_attempted) {
+          if (inspectOnly) throw new CommandExecutionError('Read-only draft verification cannot save a cover');
+          return saveCustomCoverDraft(page, file, op, timeout, wait);
+        }
         // A fresh exact draft read after an ambiguous save is sufficient to
         // reconcile its persisted covers; never repeat that save automatically.
         op.cover.saved = true;
@@ -156,24 +165,40 @@ async function verifySavedDraftOnce(page, file, op, timeout, wait, retryCoverRol
       op.draft_verified_at = new Date().toISOString();
       op.message = s.can_submit ? 'Platform draft saved, found by exact ID and reopened; await user confirmation before separate submit'
         : 'Platform draft saved and reopened; wait for cover or other editor requirements before user-confirmed submission';
-      await wait.finish(); await save(file, op); return result(op);
+      delete op.wait_error; await wait.finish(); await save(file, op); return result(op);
     }
     await page.wait(0.5);
   }
   throw new TimeoutError('Reopened platform draft verification', timeout);
 }
 
+async function draftSaveControl(page, op, wait, existing = false) {
+  const stage = await wait.stage(existing ? 'cover-draft-save-control' : 'draft-save-control', 60);
+  let maxPercent = -1;
+  for (;;) {
+    wait.assertRemaining();
+    const state = await inspect(page, 'save-draft', op);
+    if (state.operation_id !== op.operation_id || !sameDescription(state.description, op.description) || !state.ai_selected
+      || existing && state.draft_id !== op.source_draft_id) throw new CommandExecutionError('Prepared draft identity, description or AI label changed; retain the editor without saving');
+    if (state.blocked) throw new CommandExecutionError('Draft save requires user action; retain the editor without saving');
+    maxPercent = Math.max(maxPercent, state.progress_percent ?? -1);
+    const observation = { ...videoObservation(state), save_available: !!state.selector };
+    await stage.observe(observation, { ...observation, progress_percent: maxPercent });
+    // A playable local preview does not imply the native save control is
+    // enabled: the platform may still be generating its default covers.
+    if (state.selector) return state;
+    await page.wait(0.5);
+  }
+}
+
 async function saveCustomCoverDraft(page, file, op, timeout, wait) {
   if (op.cover.save_attempted) throw new CommandExecutionError('Custom cover save already attempted; resume to inspect the exact saved draft without saving again');
   await verifyCover(page, op);
-  const state = await inspect(page, 'save-draft', op);
-  if (state.operation_id !== op.operation_id || state.draft_id !== op.source_draft_id || !sameDescription(state.description, op.description) || !state.selector) {
-    throw new CommandExecutionError('Exact existing draft or native save control changed; custom cover was not saved');
-  }
+  const state = await draftSaveControl(page, op, wait, true);
   if (!await page.startNetworkCapture('/post_draft')) throw new CommandExecutionError('Native cover draft receipt capture is required');
   await page.readNetworkCapture(); const started = Date.now();
-  op.cover.save_attempted = true; op.status = 'draft_save_unknown'; await save(file, op);
-  await page.focusWindow?.(); await (page.clickOnce ?? page.click).call(page, state.selector);
+  op.cover.save_attempted = true; op.cover.save_started_at = new Date(started).toISOString(); op.status = 'draft_save_unknown'; await save(file, op);
+  await page.focusWindow?.(); wait.assertRemaining(); await (page.clickOnce ?? page.click).call(page, state.selector);
   if (await savedDraftId(page, started, timeout, wait) !== op.source_draft_id) throw new CommandExecutionError('Cover update returned a different draft ID; inspect it, never create or save again');
   op.cover.saved = true; op.status = 'draft_saved'; await save(file, op);
   return verifySavedDraft(page, file, op, timeout, wait);
@@ -181,16 +206,13 @@ async function saveCustomCoverDraft(page, file, op, timeout, wait) {
 
 async function persistDraft(page, file, op, timeout, wait) {
   if (op.draft_save_attempted) throw new CommandExecutionError('Draft save was already attempted; inspect the draft box, do not repeat saving automatically');
-  const state = await inspect(page, 'save-draft', op);
-  if (state.operation_id !== op.operation_id || !sameDescription(state.description, op.description) || !state.ai_selected || !state.selector) {
-    throw new CommandExecutionError('Unique native draft save control or prepared content unavailable');
-  }
+  const state = await draftSaveControl(page, op, wait);
   if (!await page.startNetworkCapture('/post_draft')) throw new CommandExecutionError('Native draft receipt capture is required');
   await page.readNetworkCapture();
   const started = Date.now();
   op.draft_save_attempted = true; op.draft_save_started_at = started; op.status = 'draft_save_unknown';
   op.message = 'Native draft save attempted; inspect exact receipt before continuing, never save again automatically';
-  await save(file, op); await page.focusWindow?.(); await (page.clickOnce ?? page.click).call(page, state.selector);
+  await save(file, op); await page.focusWindow?.(); wait.assertRemaining(); await (page.clickOnce ?? page.click).call(page, state.selector);
   op.source_draft_id = await savedDraftId(page, started, timeout, wait);
   op.status = 'draft_saved'; await save(file, op);
   return verifySavedDraft(page, file, op, timeout, wait);
@@ -224,7 +246,7 @@ export async function publishVideo(page, args) {
       if (args['retry-cover-processing']) {
         if (op.cover?.role !== args['retry-cover-processing'] || !await recoverCoverProcessing(page, op, () => save(file, op), wait)) throw new CommandExecutionError('Exact native processing failure was not proven; retain the editor');
       }
-      await configureCover(page, op, () => save(file, op), args.timeout ?? 180, wait);
+      await configureCover(page, op, () => save(file, op), args.timeout ?? 180, wait, null, opening);
       return saveCustomCoverDraft(page, file, op, args.timeout ?? 180, wait);
     }
     if (op && mode === 'prepare') for (const [role, flag] of [['horizontal', 'cover'], ['vertical', 'vertical-cover']]) {
@@ -240,7 +262,7 @@ export async function publishVideo(page, args) {
       if (state.draft_id !== pending.source_draft_id || !sameDescription(state.description, pending.description) || state.blocked || !state.ready || state.cover_pending) throw new CommandExecutionError('Exact saved draft, description, preview or cover is not ready; refusing adoption');
       // The platform can drop this declaration when reopening a saved draft.
       // Restore only the explicitly supplied choice through its scoped control.
-      for (let n = 0; n < 12 && !state.ai_selected; n++) {
+      for (let n = 0; n < 12 && !state.ai_selected && Date.now() < wait.deadline; n++) {
         const control = await inspect(page, 'ai', pending);
         if (control.blocked || control.draft_id !== pending.source_draft_id || !sameDescription(control.description, pending.description)) throw new CommandExecutionError('Saved draft changed while restoring its declaration');
         if (control.selector) await page.click(control.selector);
@@ -288,9 +310,13 @@ export async function publishVideo(page, args) {
         op.target = args['editor-page']; op.editor_session = args['editor-session']; await save(file, op);
       } else if (mode !== 'resume') {
         // A retained journal is never permission to upload again.
-        if (op && mode === 'prepare') {
+        const authResume = op && mode === 'prepare' && op.authentication_required === true && op.upload_attempted === false
+          && !op.file_selected && !op.submitted && !op.draft_save_attempted && !op.source_draft_id
+          && ['preparing', 'preparation_unknown'].includes(op.status);
+        if (op && mode === 'prepare' && !authResume) {
           return result({ ...op, message: 'Existing operation retained; inspect its status instead of uploading again' });
         }
+        if (authResume && (args.description !== op.description || args['ai-generated'] !== op.ai_generated)) throw new ArgumentError('Authentication recovery must retain the original description and AI declaration');
         if (mode === 'retry-upload') {
           if (!op || op.submitted || !['preparing', 'preparation_unknown', 'processing', 'upload_not_started', 'requires_user_action'].includes(op.status) || !(args['editor-page'] || op.target)) throw new CommandExecutionError('Explicit upload retry requires an unsubmitted interrupted operation and an inspected editor');
           page.setActivePage(args['editor-page'] || op.target);
@@ -304,6 +330,7 @@ export async function publishVideo(page, args) {
         const hash = createHash('sha256');
         for await (const chunk of createReadStream(media)) hash.update(chunk);
         const sha256 = hash.digest('hex');
+        if (authResume && op.sha256 !== sha256) throw new ArgumentError('Original video hash changed; refusing authentication recovery');
         if (mode === 'retry-upload') {
           if (op.sha256 !== sha256) throw new CommandExecutionError('Original video hash changed; refusing upload retry');
           if (op.upload?.effect !== 'none') throw new CommandExecutionError('Upload outcome is not proven absent; inspect or recover the original preview, do not upload again');
@@ -313,15 +340,23 @@ export async function publishVideo(page, args) {
             op.target = args['editor-page']; op.editor_session = args['editor-session'];
           }
           op.status = 'preparing'; op.file_selected = false; op.description_filled = false;
-        } else op = { version: 1, operation_id: randomUUID(), created_at: new Date().toISOString(),
+        } else if (!authResume) op = { version: 1, operation_id: randomUUID(), created_at: new Date().toISOString(),
           description: args.description, ai_generated: args['ai-generated'], sha256,
           ...((args.cover || args['vertical-cover']) ? { cover: await requestedCovers(args) } : {}),
           status: 'preparing', submitted: false,
           upload: { effect: 'none', recorded_at: new Date().toISOString() } };
-        if (mode === 'prepare') {
-          await page.goto(CREATE_URL, { stealth: false });
-          op.target = page.getActivePage?.();
-        } else op.target = page.getActivePage?.();
+        let navigateToEditor = mode === 'prepare';
+        if (authResume) {
+          if (!op.target) throw new CommandExecutionError('Authentication recovery requires the retained page identity');
+          page.setActivePage(op.target);
+          const before = await page.evaluate(publishScript('status', op.operation_id, op.ai_generated));
+          const safeLanding = before?.error === 'login_required' || before?.error === 'wrong_editor_path' && ['/', '/platform', '/platform/'].includes(before.path);
+          if (!before || before.blocked || before.error && !safeLanding && before.error !== 'editor_loading') throw new CommandExecutionError('Authentication recovery requires the original login or editor page');
+          if (!before.error && (before.draft_id || before.input_files.length || before.videos.some(v => v.has_source || v.ready_state > 0) || before.description?.trim())) throw new CommandExecutionError('Authentication recovery requires an empty editor; retain existing content without uploading');
+          navigateToEditor = safeLanding;
+        }
+        if (navigateToEditor) await page.goto(CREATE_URL, { stealth: false });
+        op.target = page.getActivePage?.();
         if (!op.target) throw new CommandExecutionError('Browser page identity is required');
         if (!op.editor_session) await page.focusWindow?.();
         const loadDeadline = wait.deadline;
@@ -346,6 +381,7 @@ export async function publishVideo(page, args) {
         const input = await inspect(page, 'input', op);
         wait.assertRemaining();
         if (!input.selector) throw new CommandExecutionError('Unique video upload control not found');
+        op.upload_attempted = true; delete op.authentication_required;
         op.upload = { effect: 'in_flight', started_at: new Date().toISOString() };
         op.status = 'preparation_unknown'; await save(file, op);
         let uploadInvoked = false;
@@ -432,8 +468,8 @@ export async function publishVideo(page, args) {
     op.submitted_at = new Date().toISOString();
     op.message = 'Submission may have happened; reconcile before any further action';
     await save(file, op);
-    await (page.clickOnce ?? page.click).call(page, state.selector);
-    for (let attempt = 0; attempt < 20; attempt++) {
+    wait.assertRemaining(); await (page.clickOnce ?? page.click).call(page, state.selector);
+    for (let attempt = 0; attempt < 20 && Date.now() < wait.deadline; attempt++) {
       try {
         const after = await inspect(page, 'status', op);
         if (after.blocked || after.success) {
@@ -453,9 +489,10 @@ export async function publishVideo(page, args) {
     // A durable saved draft survives its old browser target. Ordinary resume
     // reopens its exact card on the current lease; incomplete cover edits still
     // require the original page and cannot be navigated away from.
-    const target = args['editor-page'] || (!reopensSavedDraft(op, mode) && op?.target);
+    const reopenDraft = reopensSavedDraft(op, mode) || args['reopen-saved-draft'] === true;
+    const target = args['editor-page'] || (!reopenDraft && op?.target);
     if (target) page.setActivePage(target);
-    if (reopensSavedDraft(op, mode)) delete op.editor_session;
+    if (reopenDraft) delete op.editor_session;
     return page.withAcceptedDialogs('https://channels.weixin.qq.com', run, (args.timeout ?? 180) * 1000 + 5000);
   }, async error => {
     if (!journalExists) return;
@@ -490,6 +527,26 @@ export async function videoStatus(page, args) {
       if (!op.target || typeof page?.setActivePage !== 'function') throw new CommandExecutionError('Retained page identity unavailable');
       page.setActivePage(op.target);
       const editor = await page.evaluate(publishScript('status', op.operation_id, op.ai_generated));
+      if (op.cover && editor && !editor.error && !editor.blocked) {
+        editor.custom_cover = await page.evaluate(coverScript('diagnostics', op.operation_id, op.cover.role));
+        if (editor.custom_cover) editor.custom_cover.activation = op.cover.activation ?? null;
+      }
+      // Reconcile an ambiguous save from the existing passive capture. Never
+      // click save again. A completed matching receipt permits read-only reopen
+      // and exact cover verification even when navigation removed old timings.
+      const inspectable = editor?.path === '/platform/post/draftListManager'
+        || !editor?.error && !editor?.blocked && editor?.operation_id === op.operation_id
+          && editor?.draft_id === op.source_draft_id && sameDescription(editor?.description, op.description);
+      if (inspectable && !op.submitted && op.status === 'draft_save_unknown' && op.cover?.phase === 'configured' && op.cover.save_attempted) {
+        const after = Date.parse(op.cover.save_started_at || op.cover.manual_confirmations?.at(-1)?.at || op.created_at);
+        const receipts = (await page.readNetworkCapture()).map(e => ({ id: draftReceipt(e, after), timestamp: e.timestamp })).filter(e => e.id);
+        editor.draft_save_receipts = receipts;
+        if (receipts.length && new Set(receipts.map(r => r.id)).size === 1 && receipts[0].id === op.source_draft_id) {
+          op.native_draft_receipt = receipts[0]; op.status = 'draft_saved'; await save(file, op);
+          const wait = publishWait(20, { onUpdate: async snapshot => { op.wait = snapshot; await save(file, op); } });
+          return verifySavedDraft(page, file, op, 20, wait, null, false, true);
+        }
+      }
       return result(op, editor);
     }
     const id = args.id;

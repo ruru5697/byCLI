@@ -903,8 +903,65 @@ describe('BasePage native input routing', () => {
     });
 
     expect(page.setFileInput).toHaveBeenCalledWith(['/tmp/receipt.pdf'], expect.stringMatching(/data-bycli-upload-target/));
+    expect(page.scripts.some(script => script.includes("new Event('input'"))).toBe(false);
+    expect(page.scripts.some(script => script.includes("new Event('change'"))).toBe(false);
     expect(page.withArgs.at(0)).toMatchObject({ markerAttr: 'data-bycli-upload-target' });
     expect(page.withArgs.at(-1)).toMatchObject({ markerAttr: 'data-bycli-upload-target' });
+  });
+
+  it.each(['main-document', 'nested-shadow', 'duplicate-reference'])('uploads the unique file input through the direct CDP fallback in %s', async mode => {
+    const page = new ActionPage();
+    page.results = [resolveOk, ['video.mp4']];
+    page.withArgsResults = [{ ok: true, multiple: false, accept: 'video/*' }, undefined];
+    const queries: number[] = [];
+    page.cdp = vi.fn(async (method, params) => {
+      if (method === 'DOM.getDocument') return { root: { nodeId: 1, children: [{ nodeId: 2, shadowRoots: [
+        { nodeId: 3, shadowRootType: 'open', children: [{ nodeId: 4, shadowRoots: [{ nodeId: 5, shadowRootType: 'open' }] }] },
+        { nodeId: 6, shadowRootType: 'closed' },
+      ], contentDocument: { nodeId: 7 } }] } };
+      if (method === 'DOM.querySelectorAll') {
+        queries.push(params!.nodeId as number);
+        return { nodeIds: (mode === 'main-document' ? params!.nodeId === 1 : mode === 'nested-shadow' ? params!.nodeId === 5 : params!.nodeId !== 3) ? [9] : [] };
+      }
+      if (method === 'DOM.describeNode') return { node: { localName: 'input', attributes: ['type', 'file'] } };
+      return {};
+    });
+    expect(await page.uploadFiles('[data-input="video"]', ['/tmp/video.mp4'])).toMatchObject({ uploaded: true, file_names: ['video.mp4'] });
+    expect(queries).toEqual([1, 3, 5]); // no closed shadow roots or unrelated iframes
+    expect(page.cdp).toHaveBeenCalledWith('DOM.getDocument', { depth: -1, pierce: true });
+    expect(page.cdp).toHaveBeenCalledWith('DOM.setFileInputFiles', { files: ['/tmp/video.mp4'], nodeId: 9 });
+  });
+
+  it.each(['missing', 'ambiguous', 'not-file', 'detached', 'denied'])('does not assign or retry files when the direct CDP target is %s', async reason => {
+    const page = new ActionPage(); page.results = [resolveOk];
+    page.withArgsResults = [{ ok: true, multiple: false }, undefined];
+    page.cdp = vi.fn(async method => {
+      if (reason === 'denied' && method === 'DOM.enable') throw new Error('CDP unavailable');
+      if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
+      if (method === 'DOM.querySelectorAll') return { nodeIds: reason === 'missing' ? [] : reason === 'ambiguous' ? [9, 10] : [9] };
+      if (method === 'DOM.describeNode') {
+        if (reason === 'detached') throw new Error('Node was removed');
+        return { node: { localName: 'input', attributes: ['type', 'text'] } };
+      }
+      return {};
+    });
+    await expect(page.uploadFiles('#file', ['/tmp/video.mp4'])).rejects.toThrow();
+    expect(vi.mocked(page.cdp).mock.calls.some(([method]) => method === 'DOM.setFileInputFiles')).toBe(false);
+    expect(vi.mocked(page.cdp).mock.calls.filter(([method]) => method === 'DOM.getDocument').length).toBeLessThanOrEqual(1);
+  });
+
+  it('retains a lost direct CDP upload reply without assigning the files twice', async () => {
+    const page = new ActionPage(); page.results = [resolveOk];
+    page.withArgsResults = [{ ok: true, multiple: false }, undefined];
+    page.cdp = vi.fn(async method => {
+      if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
+      if (method === 'DOM.querySelectorAll') return { nodeIds: [9] };
+      if (method === 'DOM.describeNode') return { node: { localName: 'input', attributes: ['type', 'file'] } };
+      if (method === 'DOM.setFileInputFiles') throw new Error('upload response lost');
+      return {};
+    });
+    await expect(page.uploadFiles('#file', ['/tmp/video.mp4'])).rejects.toThrow('upload response lost');
+    expect(vi.mocked(page.cdp).mock.calls.filter(([method]) => method === 'DOM.setFileInputFiles')).toHaveLength(1);
   });
 
   it('rejects non-file-input upload targets with a structured error', async () => {

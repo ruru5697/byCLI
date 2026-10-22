@@ -874,6 +874,29 @@ describe('network capture · OOPIF (cross-origin iframe) sessionId routing', () 
     expect(methods).toContain('Runtime.runIfWaitingForDebugger');
   });
 
+  it('excludes unmatched worker targets from paused auto-attach at every nesting level', async () => {
+    const { chrome, debuggerApi, debuggerEventListeners } = createChromeMock();
+    vi.stubGlobal('chrome', chrome);
+    const mod = await import('./cdp');
+    mod.registerListeners();
+    await mod.startNetworkCapture(1);
+    await emitFrom(debuggerEventListeners, { tabId: 1 }, 'Target.attachedToTarget', {
+      sessionId: 'IFRAME1', targetInfo: { type: 'iframe', targetId: 'T1', url: 'https://frame.example/' },
+    });
+    const policies = debuggerApi.sendCommand.mock.calls.filter((c: any[]) => c[1] === 'Target.setAutoAttach');
+    expect(policies.length).toBeGreaterThanOrEqual(2);
+    for (const call of policies) {
+      const p = call[2] as any;
+      expect(p.waitForDebuggerOnStart).toBe(true);
+      // CDP uses first-match rules; unmatched targets are implicitly included.
+      const match = (type: string) => p.filter.find((f: any) => !f.type || f.type === type);
+      expect(match('iframe')?.exclude).toBe(false);
+      expect(match('worker')?.exclude).toBe(true);
+      expect(match('shared_worker')?.exclude).toBe(true);
+      expect(match('service_worker')?.exclude).toBe(true);
+    }
+  });
+
   it('resumes a non-iframe child without arming capture domains', async () => {
     const { chrome, debuggerApi, debuggerEventListeners } = createChromeMock();
     vi.stubGlobal('chrome', chrome);

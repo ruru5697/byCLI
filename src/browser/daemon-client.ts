@@ -39,6 +39,8 @@ export interface DaemonCommand {
   /** Adapter site session lifecycle. Persistent site sessions do not idle-expire. */
   siteSession?: 'ephemeral' | 'persistent';
   url?: string;
+  /** Navigation wait policy. 'none' returns after the guarded tab update starts. */
+  waitUntil?: 'load' | 'none';
   op?: string;
   index?: number;
   domain?: string;
@@ -322,9 +324,9 @@ export async function requestDaemonShutdown(opts?: { timeout?: number }): Promis
 async function sendCommandRaw(
   action: DaemonCommand['action'],
   params: Omit<DaemonCommand, 'id' | 'action'>,
-  once = false,
+  options: { retry?: boolean } = {},
 ): Promise<DaemonResult> {
-  const maxRetries = once || action === 'set-file-input' ? 1 : 4;
+  const maxRetries = options.retry === false || action === 'set-file-input' ? 1 : 4;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     const id = generateId();
@@ -382,14 +384,6 @@ async function sendCommandRaw(
   throw new Error('sendCommand: max retries exhausted');
 }
 
-/** A mutation with a lost response must be reconciled, never dispatched twice. */
-export async function sendCommandOnce(
-  action: DaemonCommand['action'],
-  params: Omit<DaemonCommand, 'id' | 'action'> = {},
-): Promise<unknown> {
-  return (await sendCommandRaw(action, params, true)).data;
-}
-
 /**
  * Send a command to the daemon and return the result data.
  */
@@ -398,6 +392,15 @@ export async function sendCommand(
   params: Omit<DaemonCommand, 'id' | 'action'> = {},
 ): Promise<unknown> {
   const result = await sendCommandRaw(action, params);
+  return result.data;
+}
+
+/** A single transport attempt for irreversible gestures. Never retries an uncertain dispatch. */
+export async function sendCommandOnce(
+  action: DaemonCommand['action'],
+  params: Omit<DaemonCommand, 'id' | 'action'> = {},
+): Promise<unknown> {
+  const result = await sendCommandRaw(action, params, { retry: false });
   return result.data;
 }
 

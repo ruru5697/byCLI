@@ -198,6 +198,14 @@ Article paragraphs are inserted as plain text; Markdown/HTML semantic formatting
 
 `article-publish --mode resume` resumes an interrupted preparation only in its bound, unchanged editor without another upload. The optional `--repair-images` rebuilds images in the same unpublished draft after verifying account, full body, current image identities and local file hashes; it is not automatic. If the tab was lost but a precise draft ID was recorded, use `reopen`. An unidentified/interrupted upload is retained for manual inspection rather than repeated. A crash may leave a `.lock` file; inspect the operation before manually removing a stale lock.
 
+### Draft wait diagnostics
+
+`--timeout` remains a per-step limit, so uploads may use a longer limit without making a stable content mismatch wait for the entire period. Once a draft is loaded, its images are ready and the page reports it saved, unchanged conflicting title/body/image/cover fields fail verification after 5 seconds. A save-failure indication fails immediately. The known creator-to-editor navigation transition gets at most 5 seconds of grace; sign-in and unrelated pages are not accepted as loading editors.
+
+Progress goes to stderr at each stage and every 15 seconds while waiting, including readiness, save state, draft ID and mismatched field names. JSON remains on stdout. To watch progress, redirect only stdout to a result file; combining streams with `2>&1 | tail -30` hides progress until the command finishes.
+
+Failed verification clears `verified`, records `verification_error` in the existing operation journal, and retains any exact draft ID already observed in the native response. Inspect that same draft and resolve content differences before `video-publish --mode reopen`; the adapter does not overwrite conflicting content, reupload media or submit automatically.
+
 ## Creator statistics
 
 ```bash
@@ -211,4 +219,4 @@ The default is a cumulative overview plus seven days of trend, including Shangha
 
 `overview` and `trend` keep `views` (`pv`) separate from `plays` (`play`), and preserve upvotes, likes, collections, comments, shares, reposts and follows as distinct counters. Missing values are `null`, actual zeros remain `0`, and missing days are not filled. Rates ending in `_pct` use percentage points; `NaN%`/undetermined values become `null`. Malformed/unsafe counters, inconsistent content identity and duplicate/out-of-range dates fail explicitly. These are logged-in browser creator endpoints, not an official API credential integration.
 
-Earlier implementation evidence: [implementation report](../../research/connector-integration-2026-10-19/zhihu-channels-connector-implementation-2026-10-19.md). Subsequent article, pin and answer command publication, status and statistics evidence is recorded in [remaining validation](../../research/connector-integration-2026-10-19/remaining-validation-2026-10-19.md). The old deleted answer and the later new answer are distinct samples. These are historical observations; the latest user-confirmation guard has not been used to publish another test item.
+Earlier implementation evidence: implementation report（本地实验记录，未随公开文档提供）. Subsequent article, pin and answer command publication, status and statistics evidence is recorded in remaining validation（本地实验记录，未随公开文档提供）. The old deleted answer and the later new answer are distinct samples. These are historical observations; the latest user-confirmation guard has not been used to publish another test item.

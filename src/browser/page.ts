@@ -123,6 +123,7 @@ export class Page extends BasePage {
     try {
       result = await sendCommandFull('navigate', {
         url,
+        ...(options?.waitUntil && { waitUntil: options.waitUntil }),
         ...this._cmdOpts(),
       });
     } catch (err) {
@@ -226,6 +227,11 @@ export class Page extends BasePage {
       return sendCommand('exec', { code, ...this._cmdOpts() });
     }
   }
+
+  async evaluateOnce<T = unknown>(js: string): Promise<T> {
+    return await sendCommandOnce('exec', { code: buildEvaluateExpression(js, []), ...this._cmdOpts() }) as T;
+  }
+
 
   async getCookies(opts: { domain?: string; url?: string } = {}): Promise<BrowserCookie[]> {
     const result = await sendCommand('cookies', { ...this._sessionOpts(), ...opts });
@@ -561,10 +567,21 @@ export class Page extends BasePage {
   }
 
   async nativeClickOnce(x: number, y: number): Promise<void> {
-    for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
-      await sendCommandOnce('cdp', { cdpMethod: 'Input.dispatchMouseEvent',
-        cdpParams: { type, x, y, ...(type === 'mouseMoved' ? {} : { button: 'left', clickCount: 1 }) }, ...this._cmdOpts() });
+    if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0) {
+      throw new Error('Native click requires finite nonnegative viewport coordinates');
     }
+    const dispatch = (params: Record<string, unknown>) => sendCommandOnce('cdp', {
+      cdpMethod: 'Input.dispatchMouseEvent', cdpParams: { x, y, ...params }, ...this._cmdOpts(),
+    });
+    await dispatch({ type: 'mouseMoved' });
+    // Release even if the press response is lost: finish the same gesture,
+    // without another press or leaving the shared browser button held down.
+    let pressError: unknown;
+    try { await dispatch({ type: 'mousePressed', button: 'left', buttons: 1, clickCount: 1 }); }
+    catch (error) { pressError = error; }
+    try { await dispatch({ type: 'mouseReleased', button: 'left', buttons: 0, clickCount: 1 }); }
+    catch (error) { if (!pressError) throw error; }
+    if (pressError) throw pressError;
   }
 
   async clickOnce(ref: string, opts: ResolveOptions = {}): Promise<void> {

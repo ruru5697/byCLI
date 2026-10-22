@@ -4,20 +4,66 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing CLI release tag to retry
+        required: true
+        type: string
+      diagnostics_only:
+        description: Only inspect registry responses without publishing
+        type: boolean
+        default: false
 
 permissions:
   contents: write
   id-token: write
 
 jobs:
+  registry-diagnostics:
+    if: github.event_name == 'workflow_dispatch' && inputs.diagnostics_only
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Compare authenticated and anonymous registry responses
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          node --input-type=module <<'NODE'
+          const token = process.env.NODE_AUTH_TOKEN;
+          for (const endpoint of ['/-/whoami', '/-/package/@sovovs%2fbycli/collaborators']) {
+            for (const authenticated of [false, true]) {
+              const response = await fetch(`https://registry.npmjs.org${endpoint}`, {
+                headers: authenticated ? { authorization: `Bearer ${token}` } : {},
+                signal: AbortSignal.timeout(15000),
+              });
+              const text = (await response.text()).replaceAll(token || '\0', '[REDACTED]')
+                .replace(/npm_[A-Za-z0-9]+/g, '[REDACTED]');
+              console.log(JSON.stringify({ endpoint, authenticated, status: response.status,
+                authenticate: response.headers.get('www-authenticate'),
+                notice: response.headers.get('npm-notice'), body: text.slice(0, 4000) }));
+            }
+          }
+          NODE
+
   release:
+    if: github.event_name != 'workflow_dispatch' || !inputs.diagnostics_only
     runs-on: ubuntu-latest
     env:
       WEBSITE_DEPLOY_TOKEN: ${{ secrets.WEBSITE_DEPLOY_TOKEN }}
     steps:
+      - name: Validate manual release tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: '[[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]'
+
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          ref: ${{ inputs.tag || github.ref }}
 
       - uses: actions/setup-node@v6
         with:
@@ -25,7 +71,8 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install dependencies
-        run: npm ci
+        # Security Audit runs separately; registry audit outages must not stall installation.
+        run: npm ci --no-audit
 
       - name: Build recorder core
         run: npm run build --workspace @sovovs/bycli-recorder-core
@@ -51,7 +98,7 @@ jobs:
         run: npm run check:package-install
 
       - name: Install extension dependencies
-        run: npm ci
+        run: npm ci --no-audit
         working-directory: extension
 
       - name: Verify extension release version
@@ -75,6 +122,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3.0.0
         with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
           generate_release_notes: true
           files: |
             bycli-extension-v*.zip
@@ -107,11 +155,67 @@ jobs:
             echo "published=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Publish to npm
+      - name: Inspect npm authentication response
         if: steps.package_status.outputs.published != 'true'
-        run: npm publish --provenance --access public
+        continue-on-error: true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          node --input-type=module <<'NODE'
+          const token = process.env.NODE_AUTH_TOKEN;
+          console.log(`Publish credential present: ${Boolean(token)}`);
+          const response = await fetch('https://registry.npmjs.org/-/whoami', {
+            headers: { authorization: `Bearer ${token}` },
+            signal: AbortSignal.timeout(15000),
+          });
+          const body = await response.json();
+          // An identity check is diagnostic only; it does not establish publish permission.
+          console.log(JSON.stringify({ status: response.status, username: body.username,
+            error: body.error, message: body.message }).replaceAll(token || '\0', '[REDACTED]'));
+          NODE
+
+      - name: Publish to npm
+        if: steps.package_status.outputs.published != 'true'
+        run: |
+          # Preserve the publish exit code; diagnostics must not hide a failure.
+          set +e
+          npm publish --provenance --access public --loglevel=verbose --logs-dir="$RUNNER_TEMP/npm-publish-debug" >"$RUNNER_TEMP/npm-publish-output.log" 2>&1
+          publish_status=$?
+          set -e
+          PUBLISH_STATUS="$publish_status" node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          const secrets = Object.entries(process.env)
+            .filter(([key, value]) => /token|secret|password|api_key/i.test(key) && value?.length >= 8)
+            .map(([, value]) => value);
+          function redact(text) {
+            for (const secret of secrets) text = text.replaceAll(secret, '[REDACTED]');
+            return text.replace(/npm_[A-Za-z0-9]+/g, '[REDACTED]')
+              .replace(/(Bearer\s+)\S+/gi, '$1[REDACTED]');
+          }
+          const root = process.env.RUNNER_TEMP;
+          const files = [path.join(root, 'npm-publish-output.log')];
+          const debugDir = path.join(root, 'npm-publish-debug');
+          if (fs.existsSync(debugDir)) {
+            files.push(...fs.readdirSync(debugDir).filter(name => name.endsWith('.log')).map(name => path.join(debugDir, name)));
+          }
+          const report = files.map(file => `=== ${path.basename(file)} ===\n${redact(fs.readFileSync(file, 'utf8'))}`).join('\n');
+          fs.writeFileSync(path.join(root, 'npm-publish-diagnostics.txt'), report);
+          console.log(report.split('\n').filter(line => !/^npm notice [\d.]+[kMB]*\s/.test(line)).join('\n'));
+          console.log(`npm publish exit status: ${process.env.PUBLISH_STATUS}`);
+          NODE
+          exit "$publish_status"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Save sanitized npm publish diagnostics
+        if: always() && steps.package_status.outputs.published == 'false'
+        uses: actions/upload-artifact@v7
+        with:
+          name: npm-publish-diagnostics-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/npm-publish-diagnostics.txt
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: Trigger website rebuild
         if: env.WEBSITE_DEPLOY_TOKEN != ''

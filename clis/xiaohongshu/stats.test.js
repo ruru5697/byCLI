@@ -1,0 +1,21 @@
+import {describe,it,expect,vi,beforeEach} from 'vitest';
+vi.mock('../_shared/video-site-submit.js',()=>({openManagerPage:vi.fn(),makeVideoAdapter:()=>({query:query}),managerAccount:vi.fn()}));
+vi.mock('../_shared/video-prepare.js',()=>({waitFor:vi.fn()}));
+vi.mock('../_shared/video-stats.js',async original=>({...await original(),statsAccount:vi.fn()}));
+import {noteMetrics,collectNoteStats} from './stats.js';
+import {metricLabels,statsAccount} from '../_shared/video-stats.js';
+const query=vi.fn();
+const id='6ad5c7d4000000001e035921';
+const rows=Object.entries(metricLabels.xiaohongshu).filter(([k])=>!['completionRate','exitRate2s'].includes(k)).map(([,label])=>({label,value:label==='观看数'?'13':label==='曝光数'?'-':'0'}));
+beforeEach(()=>{vi.clearAllMocks();statsAccount.mockResolvedValue({id:'5401110825',name:'test'});query.mockResolvedValue({contentType:'image',status:'published'});});
+describe('XHS per-note analytics content isolation',()=>{
+ it('keeps the nine image labels, zeros and placeholders without video-only metrics',()=>{const m=noteMetrics('image',rows);expect(Object.keys(m)).toHaveLength(9);expect(m.views.value).toBe(13);expect(m.likes.value).toBe(0);expect(m.impressions).toMatchObject({value:null,reason:'platform_placeholder'});expect(m).not.toHaveProperty('completionRate');expect(m).not.toHaveProperty('exitRate2s');});
+ it('requires every expected label exactly once',()=>{expect(()=>noteMetrics('image',rows.slice(1))).toThrow();expect(()=>noteMetrics('image',[...rows,rows[0]])).toThrow();expect(()=>noteMetrics('video',rows)).toThrow();expect(Object.keys(noteMetrics('video',[...rows,{label:'完播率',value:'-'},{label:'2秒退出率',value:'-'}]))).toHaveLength(11);});
+ const page=()=>({goto:vi.fn(),focusWindow:vi.fn(),evaluate:vi.fn(async()=>({id,title:'我被一杯咖啡面试了',info:'我被一杯咖啡面试了\n2026-10-19 15:33\n笔记状态正常',metrics:rows,text:'观看数不足100'}))});
+ it('returns image identity only after owner-record and detail checks',async()=>{const p=page();const [r]=await collectNoteStats(p,{'content-id':id,type:'image','account-id':'5401110825'});expect(r).toMatchObject({contentId:id,contentType:'image',source:{identity:'exact_owner_image_record'},publishedAt:'2026-10-19 15:33',metrics:{views:{value:13}}});expect(statsAccount).toHaveBeenCalledTimes(3);});
+ it.each(['video',null])('refuses a mismatched or unknown owner type %s before opening detail',async type=>{query.mockResolvedValue({contentType:type});const p=page();await expect(collectNoteStats(p,{'content-id':id,type:'image'})).rejects.toMatchObject({code:'CONTENT_TYPE_UNVERIFIED'});expect(p.goto).not.toHaveBeenCalled();});
+ it('keeps video as default and refuses image IDs without explicit image selection',async()=>{const p=page();await expect(collectNoteStats(p,{'content-id':id})).rejects.toMatchObject({code:'CONTENT_TYPE_UNVERIFIED'});expect(p.goto).not.toHaveBeenCalled();});
+ it('refuses a mismatched detail ID',async()=>{const p=page();p.evaluate.mockResolvedValue({id:'a'.repeat(24),title:'other',info:'笔记状态正常',metrics:rows});await expect(collectNoteStats(p,{'content-id':id,type:'image'})).rejects.toMatchObject({code:'CONTENT_UNVERIFIED'});});
+ it('refuses an account change after reading metrics',async()=>{statsAccount.mockResolvedValueOnce({id:'5401110825'}).mockResolvedValueOnce({id:'5401110825'}).mockRejectedValueOnce(Object.assign(new Error('changed'),{code:'ACCOUNT_CHANGED'}));await expect(collectNoteStats(page(),{'content-id':id,type:'image'})).rejects.toMatchObject({code:'ACCOUNT_CHANGED'});});
+ it('rejects unsupported types before browsing',async()=>{const p=page();await expect(collectNoteStats(p,{'content-id':id,type:'article'})).rejects.toThrow();expect(p.goto).not.toHaveBeenCalled();});
+});

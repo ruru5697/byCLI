@@ -54,6 +54,51 @@ describe('Page scoped dialog acceptance', () => {
   });
 });
 
+
+describe('Page.evaluateOnce', () => {
+  it('uses the single-attempt transport without the ordinary navigation retry', async () => {
+    sendCommandOnceMock.mockReset(); sendCommandMock.mockReset();
+    sendCommandOnceMock.mockRejectedValue(new Error('Execution context was destroyed'));
+    const page = new Page('owned', undefined, 'profile'); page.setActivePage('exact-editor');
+    await expect(page.evaluateOnce('button.click()')).rejects.toThrow('Execution context was destroyed');
+    expect(sendCommandOnceMock).toHaveBeenCalledTimes(1);
+    expect(sendCommandOnceMock).toHaveBeenCalledWith('exec', expect.objectContaining({ page: 'exact-editor', contextId: 'profile' }));
+    expect(sendCommandMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('Page.nativeClickOnce', () => {
+  beforeEach(() => { sendCommandOnceMock.mockReset(); sendCommandMock.mockReset(); });
+  it('sends real mouse move/press/release once to the exact owned page', async () => {
+    const page = new Page('owned', undefined, 'profile'); page.setActivePage('exact-editor');
+    await page.nativeClickOnce(123.5, 456);
+    expect(sendCommandOnceMock.mock.calls.map(([action, cmd]) => [action, cmd.cdpParams.type])).toEqual([
+      ['cdp', 'mouseMoved'], ['cdp', 'mousePressed'], ['cdp', 'mouseReleased'],
+    ]);
+    for (const [, cmd] of sendCommandOnceMock.mock.calls) expect(cmd).toMatchObject({
+      cdpMethod: 'Input.dispatchMouseEvent', cdpParams: { x: 123.5, y: 456 }, page: 'exact-editor', contextId: 'profile',
+    });
+    expect(sendCommandMock).not.toHaveBeenCalled();
+  });
+  it('releases a possibly held mouse button after a lost press response without another press', async () => {
+    sendCommandOnceMock.mockResolvedValueOnce({}).mockRejectedValueOnce(new Error('press response lost')).mockResolvedValueOnce({});
+    await expect(new Page('owned').nativeClickOnce(1, 2)).rejects.toThrow('press response lost');
+    expect(sendCommandOnceMock.mock.calls.map(([, cmd]) => cmd.cdpParams.type)).toEqual(['mouseMoved', 'mousePressed', 'mouseReleased']);
+    expect(sendCommandMock).not.toHaveBeenCalled();
+  });
+  it.each([0, 2])('does not replay after an error at gesture step %s', async step => {
+    for (let n = 0; n < step; n++) sendCommandOnceMock.mockResolvedValueOnce({});
+    sendCommandOnceMock.mockRejectedValueOnce(new Error('response lost'));
+    await expect(new Page('owned').nativeClickOnce(1, 2)).rejects.toThrow('response lost');
+    expect(sendCommandOnceMock).toHaveBeenCalledTimes(step + 1);
+    expect(sendCommandMock).not.toHaveBeenCalled();
+  });
+  it.each([[NaN, 0], [0, Infinity], [-1, 0]])('rejects invalid coordinates %s %s before sending input', async (x, y) => {
+    await expect(new Page('owned').nativeClickOnce(x, y)).rejects.toThrow('coordinates');
+    expect(sendCommandOnceMock).not.toHaveBeenCalled();
+  });
+});
+
 describe('Page.consoleMessages', () => {
   beforeEach(() => { fetchDaemonStatusMock.mockReset(); sendCommandMock.mockReset(); });
   it('reads a dedicated console snapshot from the selected tab and profile', async () => {
@@ -237,6 +282,7 @@ describe('Page.getCurrentUrl', () => {
       session: 'site:chatgpt',
       surface: 'adapter',
       siteSession: 'persistent',
+      waitUntil: 'none',
     }));
     expect(sendCommandMock).toHaveBeenCalledWith('exec', expect.objectContaining({
       session: 'site:chatgpt',
@@ -669,5 +715,19 @@ describe('Page.screenshot', () => {
     expect(args.width).toBeUndefined();
     expect(args.height).toBeUndefined();
     expect(args.fullPage).toBeUndefined();
+  });
+});
+
+
+describe('Page.evaluateOnce', () => {
+  it('uses the no-retry transport and never retries a navigation error', async () => {
+    sendCommandOnceMock.mockReset(); sendCommandMock.mockReset();
+    sendCommandOnceMock.mockRejectedValue(new Error('Inspected target navigated or closed'));
+    const page = new Page('site:xiaohongshu', undefined, undefined, undefined, 'adapter', 'persistent');
+    page.setActivePage('confirmed-editor');
+    await expect(page.evaluateOnce('window.finalGesture()')).rejects.toThrow('navigated');
+    expect(sendCommandOnceMock).toHaveBeenCalledTimes(1);
+    expect(sendCommandOnceMock).toHaveBeenCalledWith('exec', expect.objectContaining({page:'confirmed-editor',surface:'adapter',siteSession:'persistent'}));
+    expect(sendCommandMock).not.toHaveBeenCalled();
   });
 });

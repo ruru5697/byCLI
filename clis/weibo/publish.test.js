@@ -53,6 +53,12 @@ function makePage({ evaluateResults = [], evaluateWithArgsResults = [], override
 describe('weibo publish command', () => {
   const getCommand = () => getRegistry().get('weibo/publish');
 
+  it('accepts supported video paths and rejects unsupported video formats', async () => {
+    const { __test__ } = await import('./publish.js');
+    expect(__test__.validateVideoPath('clip.mp4')).toBe('/abs/clip.mp4');
+    expect(() => __test__.validateVideoPath('clip.avi')).toThrow(ArgumentError);
+  });
+
   it('publishes a text-only post when the UI reports success', async () => {
     const command = getCommand();
     const page = makePage({
@@ -117,6 +123,7 @@ describe('weibo publish command', () => {
     await expect(command.func(page, { text: 'hi', images: 'a.bmp' })).rejects.toBeInstanceOf(ArgumentError);
     await expect(command.func(page, { text: 'hi', images: 'missing.png' })).rejects.toBeInstanceOf(ArgumentError);
     await expect(command.func(page, { text: 'hi', images: '1.png,2.png,3.png,4.png,5.png,6.png,7.png,8.png,9.png,10.png' })).rejects.toBeInstanceOf(ArgumentError);
+    await expect(command.func(page, { text: 'hi', images: 'a.png', video: 'clip.mp4' })).rejects.toBeInstanceOf(ArgumentError);
     expect(page.goto).not.toHaveBeenCalled();
   });
 

@@ -66,3 +66,22 @@ docs/developer/documentation-audit-2026-05.md
 # 内部设计/路线过程文档(Codex 审计标记:含作者/日期/竞品分析/customer report)
 designs/
 docs/design/
+
+# Local connector research, account-bound acceptance evidence and manual probes
+/artifacts/
+/docs/research/connector-native/
+/scripts/verify-native-*.mjs
+/*验收.md
+/连接器需求.md
+/连接器原生实现预研与方案.md
+/连接器原生实现最终方案.md
+/连接器原生命令交付手册.md
+test-assets/百应Group产品推介2-sanitized.mp4
+test-assets/toutiao-downloads-default-final/本体江湖：五大门派的绝技与困局.md
+test-assets/toutiao-downloads-final/本体江湖：五大门派的绝技与困局.md
+test-assets/toutiao-downloads-json-final/本体江湖：五大门派的绝技与困局.json
+test-assets/toutiao-downloads-json-final/本体江湖：五大门派的绝技与困局.md
+/.tmp/
+
+# Account-bound platform acceptance exports stay local.
+/weibo-acceptance-*/

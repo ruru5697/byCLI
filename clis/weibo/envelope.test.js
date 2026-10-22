@@ -27,6 +27,17 @@ function makePage(evaluateResults = []) {
 }
 
 describe('weibo read adapters Browser Bridge envelopes', () => {
+  it('follows comment cursors without duplicating comment ids', async () => {
+    const page = makePage([
+      envelope({ items: [{ comment_id: 'c1', author: 'a', text: 'one' }], next_cursor: 'next-1', has_more: true }),
+      envelope({ items: [{ comment_id: 'c1', author: 'a', text: 'one' }, { comment_id: 'c2', author: 'b', text: 'two' }], next_cursor: '', has_more: false }),
+    ]);
+    const rows = await getRegistry().get('weibo/comments').func(page, { id: 'https://weibo.com/42/AbC12', limit: 2, sort: 'time' });
+    expect(rows.map((row) => row.comment_id)).toEqual(['c1', 'c2']);
+    expect(page.evaluate).toHaveBeenCalledTimes(2);
+    expect(page.evaluate.mock.calls[1][0]).toContain('next-1');
+  });
+
   it('unwraps comments, feed, hot, search, and favorites array payloads', async () => {
     await expect(getRegistry().get('weibo/comments').func(
       makePage([envelope([{ rank: 1, author: 'a', text: 't', likes: 0, replies: 0, time: '' }])]),

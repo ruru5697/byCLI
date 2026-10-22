@@ -10,6 +10,7 @@ import {
   releaseAdapterLease,
   requestDaemonShutdown,
   sendCommand,
+  sendCommandOnce,
 } from './daemon-client.js';
 import * as daemonClientModule from './daemon-client.js';
 import { runWithAdapterExecutionContext } from '../adapter-execution-context.js';
@@ -32,6 +33,11 @@ describe('daemon-client', () => {
   it('never retries native file injection after a lost HTTP response', async () => {
     vi.mocked(fetch).mockRejectedValue(new TypeError('connection reset'));
     await expect(sendCommand('set-file-input', { files: ['/tmp/video.mp4'] })).rejects.toThrow('connection reset');
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it('does not replay a single-execution UI action on network failure', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('connection reset')));
+    await expect(sendCommandOnce('exec', { code: 'button.click()', page: 'exact-editor' })).rejects.toThrow('connection reset');
     expect(fetch).toHaveBeenCalledTimes(1);
   });
   beforeEach(() => {
@@ -472,6 +478,21 @@ describe('daemon-client', () => {
       code: 'extension_capability_missing',
       hint: expect.stringMatching(/update.*reload/i),
     } satisfies Partial<BrowserCommandError>);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe('irreversible command transport', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+  it.each(['Inspected target navigated or closed','Extension disconnected'])('does not retry a transient result: %s', async message => {
+    const fetchMock=vi.fn(async()=>({status:200,json:async()=>({ok:false,error:message})}));vi.stubGlobal('fetch',fetchMock);
+    await expect(sendCommandOnce('exec',{code:'irreversible()'})).rejects.toThrow(message);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+  it('does not resend after an uncertain network failure', async () => {
+    const fetchMock=vi.fn(async()=>{throw new TypeError('fetch failed');});vi.stubGlobal('fetch',fetchMock);
+    await expect(sendCommandOnce('exec',{code:'irreversible()'})).rejects.toThrow('fetch failed');
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

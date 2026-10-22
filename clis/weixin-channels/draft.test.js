@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import { draftReceipt, savedDraftId, savedDraftScript } from './_shared/draft.js';
 
@@ -6,6 +6,16 @@ const receipt = () => ({ url: 'https://channels.weixin.qq.com/micro/content/cgi-
   method: 'POST', responseStatus: 201, timestamp: 100, responsePreview: JSON.stringify({ errCode: 0, data: { objectId: 'export/exact_draft' } }) });
 
 describe('Channels native platform draft identity', () => {
+  it('reads the exact CDP receipt after native save replaced the editor document with the draft box', async () => {
+    const dom = new JSDOM('', { url: 'https://channels.weixin.qq.com/platform/post/draftListManager', runScripts: 'outside-only' });
+    const page = { evaluate: async script => dom.window.eval(script), wait: async () => {}, readNetworkCapture: async () => [receipt()] };
+    expect(await savedDraftId(page, 100, 1)).toBe('export/exact_draft'); dom.window.close();
+  });
+  it('does not treat draft-box navigation alone as a successful save', async () => {
+    const dom = new JSDOM('', { url: 'https://channels.weixin.qq.com/platform/post/draftListManager', runScripts: 'outside-only' });
+    const page = { evaluate: async script => dom.window.eval(script), wait: async () => {}, readNetworkCapture: async () => [] };
+    await expect(savedDraftId(page, 100, 1)).rejects.toThrow('one exact successful receipt'); dom.window.close();
+  });
   it('accepts the observed save response without inferring an ID from the title', () => {
     expect(draftReceipt(receipt(), 100)).toBe('export/exact_draft');
   });
@@ -24,6 +34,23 @@ describe('Channels native platform draft identity', () => {
     } };
     await expect(savedDraftId(page, 100, 1)).rejects.toThrow('one exact'); expect(drains).toBe(1);
   });
+  it.each([
+    ['saved text\n', 'saved text', true],
+    ['saved text\n', 'saved text\n\n', true],
+    ['saved text\u00a0\n', 'saved text', false],
+    [' saved text\n', 'saved text', false],
+    ['saved\ntext\n', 'saved text', false],
+    ['changed text\n', 'saved text', false],
+  ])('ignores only trailing rich-text newlines for %j against %j', (stored, expected, matches) => {
+    const dom = new JSDOM('<div class="post-draft-item"><span class="icon-edit"></span></div>',
+      { url: 'https://channels.weixin.qq.com/platform/post/draftListManager', runScripts: 'outside-only' });
+    dom.window.document.querySelector('.post-draft-item').__vue__ = {
+      $props: { post: { objectId: 'export/exact_draft', desc: { description: stored } } },
+    };
+    const state = dom.window.eval(savedDraftScript('export/exact_draft', expected));
+    expect(state).toMatchObject(matches ? { matches: 1, id: 'export/exact_draft' } : { error: 'draft_content_changed' });
+    dom.window.close();
+  });
   it('selects only the exact saved card and rejects changed content', () => {
     const dom = new JSDOM('<div class="post-draft-item"><span class="icon-edit"></span></div>',
       { url: 'https://channels.weixin.qq.com/platform/post/draftListManager', runScripts: 'outside-only' });
@@ -38,4 +65,16 @@ describe('Channels native platform draft identity', () => {
     expect(dom.window.eval(savedDraftScript('export/exact_draft', 'changed'))).toMatchObject({ error: 'draft_content_changed' });
     dom.window.close();
   });
+});
+
+
+it('normalizes the ISO save timestamp retained by legacy operations before matching receipts', async () => {
+  const page = { evaluate: vi.fn(async () => true), wait: async () => {}, readNetworkCapture: async () => [receipt()] };
+  expect(await savedDraftId(page, new Date(100).toISOString(), 1)).toBe('export/exact_draft');
+  expect(page.evaluate.mock.calls[0][0]).toContain('>= 100');
+});
+it('rejects an invalid retained save timestamp without draining network capture', async () => {
+  const page = { evaluate: vi.fn(), readNetworkCapture: vi.fn() };
+  await expect(savedDraftId(page, 'invalid', 1)).rejects.toThrow('start time is invalid');
+  expect(page.evaluate).not.toHaveBeenCalled(); expect(page.readNetworkCapture).not.toHaveBeenCalled();
 });

@@ -1,0 +1,4 @@
+import {cli,Strategy} from '@sovovs/bycli/registry';
+import {collectNoteStats} from './_stats.js';
+export {noteMetrics,collectNoteStats,collectVideoStats} from './_stats.js';
+cli({site:'xiaohongshu',name:'stats',access:'read',description:'按精确内容ID采集小红书视频或图文详情数据，保留缺失值和原始口径',domain:'creator.xiaohongshu.com',strategy:Strategy.COOKIE,browser:true,navigateBefore:false,siteSession:'persistent',args:[{name:'type',default:'video',choices:['video','image'],help:'Content type; checked against the exact owner record'},{name:'content-id',required:true},{name:'account-id',help:'Expected public creator account number'},{name:'scope',default:'content'}],columns:['platform','contentId','contentType','scope','account','title','publishedAt','collectedAt','dataAsOf','period','source','metrics','limitations'],func:collectNoteStats});

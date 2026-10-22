@@ -18,7 +18,7 @@ export function inspectPublishPage(action, operationId, expectedAi) {
   if (/^\/login(?:\.html)?(?:\/|$)/i.test(location.pathname)) return { error: 'login_required' };
   const inputs = roots.flatMap(r => [...r.querySelectorAll('input[type="file"]')])
     .filter(x => /video/i.test(x.getAttribute('accept') || ''));
-  if (location.pathname !== '/platform/post/create') return { error: 'wrong_editor_path' };
+  if (location.pathname !== '/platform/post/create') return { error: 'wrong_editor_path', path: location.pathname };
   if (inputs.length === 0) return { error: 'editor_loading' };
   if (inputs.length !== 1) return { error: 'ambiguous_video_input' };
   const root = inputs[0].getRootNode();
@@ -48,6 +48,14 @@ export function inspectPublishPage(action, operationId, expectedAi) {
   const coverPending = /封面生成中|生成中/.test(text);
   const enabledPublish = publishButtons.filter(x => !x.disabled && x.getAttribute('aria-disabled') !== 'true' && !/disabled/.test(x.className));
   const canSubmit = ready && aiSelected && editors.length === 1 && !coverPending && enabledPublish.length === 1;
+  const processing = /上传中/.test(text) ? 'uploading' : /转码中/.test(text) ? 'transcoding' : /处理中/.test(text) ? 'processing' : null;
+  const progressValues = elements.filter(e => e.matches('progress,[role="progressbar"]')).map(e => {
+    if (e.matches('progress')) return e.hasAttribute('value') ? e.value / e.max * 100 : null;
+    if (!e.hasAttribute('aria-valuenow')) return null;
+    const value = Number(e.getAttribute('aria-valuenow')), min = Number(e.getAttribute('aria-valuemin') ?? 0);
+    const max = Number(e.getAttribute('aria-valuemax') ?? 100);
+    return Number.isFinite(value) && max > min ? (value - min) / (max - min) * 100 : null;
+  }).filter(n => n !== null && n >= 0 && n <= 100);
   const mark = (el, name) => {
     for (const old of root.querySelectorAll('[data-bycli-channels-action]')) {
       if (old.getAttribute('data-bycli-channels-action') === name) old.removeAttribute('data-bycli-channels-action');
@@ -76,12 +84,13 @@ export function inspectPublishPage(action, operationId, expectedAi) {
   if (action === 'bind') document.documentElement.setAttribute('data-bycli-channels-operation', operationId);
   return {
     url: location.href, operation_id: document.documentElement.getAttribute('data-bycli-channels-operation'), draft_id: draftId,
-    blocked, ready, initializing, processing: /上传中|转码中|处理中/.test(text), description: editors.length === 1 ? editors[0].innerText || editors[0].textContent : null,
+    blocked, ready, initializing, processing, description: editors.length === 1 ? editors[0].innerText || editors[0].textContent : null,
     ai_selected: aiSelected, selector, success: /发表成功|发布成功|提交成功/.test(text),
     input_files: [...(inputs[0].files || [])].map(f => ({ name: f.name, size: f.size })),
     editors_count: editors.length,
     videos: videos.map(v => ({ has_source: !!(v.currentSrc || v.getAttribute('src')), ready_state: v.readyState, duration: Number.isFinite(v.duration) ? v.duration : null })),
     cover_pending: coverPending,
+    progress_percent: progressValues.length === 1 ? Math.floor(progressValues[0]) : null,
     can_submit: canSubmit,
     publish_buttons: publishButtons.map(b => ({ disabled: b.disabled, aria_disabled: b.getAttribute('aria-disabled'), classes: b.className })),
   };

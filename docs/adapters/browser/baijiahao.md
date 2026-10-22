@@ -89,4 +89,4 @@ bycli baijiahao video-download \
 
 2026-10-19：通过这些命令新发布视频 `1879490486260090068` 和 news `1879490896848503110`，均核对到正式 `publish` 状态。公开文章正文、两图及 AI 声明核对通过；新视频正式页下载经 `ffprobe` 确认为 H.264/AAC、1280×720、174.96 秒。
 
-详见[设计、实施与命令验收记录](../../research/connector-integration-2026-10-19/baijiahao-cli-implementation-2026-10-19.md)。同一篇 news 覆盖图文和文章两组能力。
+详见设计、实施与命令验收记录（本地实验记录，未随公开文档提供）。同一篇 news 覆盖图文和文章两组能力。

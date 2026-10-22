@@ -264,7 +264,8 @@ const AUTO_ATTACH_IFRAME_PARAMS = {
   autoAttach: true,
   waitForDebuggerOnStart: true,
   flatten: true,
-  filter: [{ type: "iframe", exclude: false }]
+  // TargetFilter defaults to including unmatched targets. Explicitly exclude workers.
+  filter: [{ type: "iframe", exclude: false }, { exclude: true }]
 };
 const CDP_RESPONSE_BODY_CAPTURE_LIMIT = 8 * 1024 * 1024;
 const CDP_REQUEST_BODY_CAPTURE_LIMIT = 1 * 1024 * 1024;
@@ -725,7 +726,8 @@ async function ensureFrameTarget(tabId, frameId, aggressiveRetry = false, target
     autoAttach: true,
     waitForDebuggerOnStart: captureActive,
     flatten: true,
-    filter: [{ type: "iframe", exclude: false }]
+    // TargetFilter defaults to including unmatched targets. Explicitly exclude workers.
+    filter: [{ type: "iframe", exclude: false }, { exclude: true }]
   }).catch(() => {
   });
   const targetId = await resolveFrameTargetId(tabId, frameId, targetUrl);
@@ -1818,7 +1820,7 @@ async function startDialogPolicy(token, lease, tabId, origin, timeoutMs) {
   }
 }
 
-const RUNTIME_BUILD_ID = "81c81f46dc7d6fee7bd001e8ca1f978da06c79845b4fd824ecceb0cb196fcf76" ;
+const RUNTIME_BUILD_ID = "683ba6cf2a6f7d51c570aa216b4fbd3d21074912de1181a314abfc6301f40a57" ;
 Object.defineProperty(globalThis, "__BYCLI_RUNTIME_BUILD_ID__", { value: RUNTIME_BUILD_ID, configurable: true });
 const EXTENSION_CAPABILITIES = ["focus-window-v1", "ima-reader-v1", "console-capture-v1", "file-input-shadow-v1", "dialog-policy-v1"];
 let ws = null;
@@ -3126,7 +3128,7 @@ async function handleNavigateUnlocked(cmd, leaseKey) {
   }
   await chrome.tabs.update(tabId, { url: targetUrl });
   let timedOut = false;
-  await new Promise((resolve) => {
+  if (cmd.waitUntil !== "none") await new Promise((resolve) => {
     let settled = false;
     let checkTimer = null;
     let blockTimer = null;
