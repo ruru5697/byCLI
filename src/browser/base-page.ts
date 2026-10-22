@@ -762,13 +762,34 @@ export abstract class BasePage implements IPage {
     if (typeof cdp !== 'function') {
       throw new Error('File upload requires setFileInput or CDP support from the active browser backend.');
     }
-    await cdp.call(this, 'DOM.enable', {}).catch(() => undefined);
-    const doc = await cdp.call(this, 'DOM.getDocument', {}) as { root?: { nodeId?: unknown } } | null;
-    const rootNodeId = doc?.root?.nodeId;
-    if (typeof rootNodeId !== 'number') throw new Error('DOM.getDocument returned no root node.');
-    const query = await cdp.call(this, 'DOM.querySelector', { nodeId: rootNodeId, selector }) as { nodeId?: unknown } | null;
-    const nodeId = query?.nodeId;
-    if (typeof nodeId !== 'number' || nodeId <= 0) throw new Error(`No element found matching selector: ${selector}`);
+    await cdp.call(this, 'DOM.enable', {});
+    type UploadNode = { nodeId: number; children?: UploadNode[]; shadowRoots?: UploadNode[]; shadowRootType?: string };
+    const doc = await cdp.call(this, 'DOM.getDocument', { depth: -1, pierce: true }) as { root?: UploadNode } | null;
+    if (typeof doc?.root?.nodeId !== 'number') throw new Error('DOM.getDocument returned no root node.');
+    // Resolve the marker in its actual open shadow root, just as the extension
+    // backend does. Do not search unrelated iframe documents or pick the first
+    // input when the original target is missing, replaced or ambiguous.
+    const roots = [doc.root.nodeId];
+    const collect = (node: UploadNode): void => {
+      for (const root of node.shadowRoots ?? []) {
+        if (root.shadowRootType !== 'open') continue;
+        roots.push(root.nodeId); collect(root);
+      }
+      for (const child of node.children ?? []) collect(child);
+    };
+    collect(doc.root);
+    const matches = new Set<number>();
+    for (const root of roots) {
+      const result = await cdp.call(this, 'DOM.querySelectorAll', { nodeId: root, selector }) as { nodeIds?: number[] } | null;
+      for (const id of result?.nodeIds ?? []) if (id > 0) matches.add(id);
+    }
+    if (matches.size !== 1) throw new Error(`File input selector must match exactly one element; got ${matches.size}`);
+    const nodeId = [...matches][0];
+    const description = await cdp.call(this, 'DOM.describeNode', { nodeId }) as { node?: { localName?: string; attributes?: string[] } } | null;
+    const attrs = description?.node?.attributes ?? [];
+    let type = '';
+    for (let i = 0; i < attrs.length; i += 2) if (attrs[i] === 'type') type = attrs[i + 1];
+    if (description?.node?.localName !== 'input' || type.toLowerCase() !== 'file') throw new Error('Upload target is not an input[type=file]');
     await cdp.call(this, 'DOM.setFileInputFiles', { files, nodeId });
   }
 
