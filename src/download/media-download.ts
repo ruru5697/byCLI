@@ -30,6 +30,8 @@ export interface MediaItem {
   url: string;
   /** Optional custom filename (without directory) */
   filename?: string;
+  /** Validate native MP4 videos before replacing the destination. */
+  expectedMedia?: 'mp4';
 }
 
 export interface MediaDownloadOptions {
@@ -148,6 +150,7 @@ export async function downloadMedia(
             cookies,
             headers,
             validateMedia,
+            expectedMedia: media.expectedMedia,
             timeout: dlTimeout,
             onProgress: (received, total) => {
               if (progressBar) progressBar.update(received, total);

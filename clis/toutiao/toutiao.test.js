@@ -209,6 +209,36 @@ describe('toutiao parseToutiaoArticlesText (silent column drop fix)', () => {
         ].join('\n');
         expect(parseToutiaoArticlesText(text)).toHaveLength(2);
     });
+
+    it('parses the current creator page layout with full dates and split metrics', () => {
+        const currentLayout = [
+            '视频',
+            '08:00',
+            'bbc news 2024-10-30 bbc news 2024-10-30',
+            '已发布',
+            '来自抖音',
+            '自动同步',
+            '展现 2,332',
+            '播放 387',
+            '评论 0',
+            '点赞 2',
+            '2024-10-30 23:46',
+            '查看数据',
+            '查看评论',
+            '修改',
+            '更多',
+        ].join('\n');
+
+        expect(parseToutiaoArticlesText(currentLayout)).toEqual([{
+            title: 'bbc news 2024-10-30 bbc news 2024-10-30',
+            date: '2024-10-30 23:46',
+            status: '已发布',
+            '展现': '2,332',
+            '阅读': '387',
+            '点赞': '2',
+            '评论': '0',
+        }]);
+    });
 });
 
 describe('toutiao auth wall detection', () => {

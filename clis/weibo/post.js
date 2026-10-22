@@ -3,7 +3,7 @@
  */
 import { cli, Strategy } from '@sovovs/bycli/registry';
 import { CommandExecutionError } from '@sovovs/bycli/errors';
-import { requireObjectEvaluateResult, unwrapEvaluateResult } from './utils.js';
+import { normalizeWeiboTarget, requireObjectEvaluateResult, unwrapEvaluateResult } from './utils.js';
 cli({
     site: 'weibo',
     name: 'post',
@@ -12,13 +12,14 @@ cli({
     domain: 'weibo.com',
     strategy: Strategy.COOKIE,
     args: [
-        { name: 'id', required: true, positional: true, help: 'Post ID (numeric idstr or mblogid from URL)' },
+        { name: 'id', required: true, positional: true, help: 'Post ID, mblogid, or Weibo post URL' },
     ],
     columns: ['field', 'value'],
     func: async (page, kwargs) => {
         await page.goto('https://weibo.com');
         await page.wait(2);
-        const id = String(kwargs.id);
+        const target = normalizeWeiboTarget(kwargs.id);
+        const id = target.id || target.mblogid;
         const data = requireObjectEvaluateResult(unwrapEvaluateResult(await page.evaluate(`
       (async () => {
         const id = ${JSON.stringify(id)};

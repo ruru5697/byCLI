@@ -1,0 +1,5 @@
+import {cli,Strategy} from '@sovovs/bycli/registry';
+import {prepareArticle} from './_article-prepare.js';
+import {articleJobAction} from './_article-submit.js';
+import {queryArticle} from './_article-query.js';
+cli({site:'juejin',name:'publish-article',access:'write',description:'掘金文章准备、复核、人工授权后单次提交、回执与状态查询',domain:'juejin.cn',strategy:Strategy.COOKIE,browser:true,navigateBefore:false,siteSession:'persistent',args:[{name:'prepare',type:'bool',default:false,help:'仅准备，不发布'},{name:'input',help:'本地文章 JSON'},{name:'resume',help:'恢复同一份失败准备任务，核对原稿后更新内容与设置'},{name:'review',help:'复核已准备的文章任务'},{name:'submit',help:'人工授权后单次提交'},{name:'confirm',help:'本次review的确认码'},{name:'status',help:'查询文章任务与作品状态'},{name:'timeout',type:'int',default:300,help:'准备超时秒数'}],columns:['status','job_id','title','account','draft_id','draft_url','submitted','content_id','confirmation','receipt_status','query_status','public_url','report','preview'],func:(page,args)=>args.prepare&&!args.review&&!args.submit&&!args.status&&!args.confirm?prepareArticle(page,args):articleJobAction(page,args,queryArticle)});

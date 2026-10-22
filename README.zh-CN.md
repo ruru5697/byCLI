@@ -92,3 +92,8 @@ bycli 52pojie search "open cli" --sort latest
 
 byCLI 衍生自 jackwener 的 [opencli](https://github.com/jackwener/opencli) 项目,
 依据 Apache License 2.0 分发。完整的修改说明与归属信息见 [NOTICE](./NOTICE) 文件。
+
+
+## 原生连接器交付资料
+
+小红书、搜狐号、掘金和CSDN的原生下载、发布及单篇数据能力，参见[原生连接器使用说明](docs/guide/native-connectors.md)。说明包含命令入口、内容确认流程、数据口径、未知回执处理及已验证范围。账号绑定的验收材料与实验媒体保留在本地，不随npm包分发。

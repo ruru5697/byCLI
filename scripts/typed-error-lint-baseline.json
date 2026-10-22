@@ -681,14 +681,6 @@
   },
   {
     "rule": "silent-clamp",
-    "command": "weibo/comments",
-    "file": "clis/weibo/comments.js",
-    "line": 19,
-    "text": "const count = Math.min(kwargs.limit || 20, 50);",
-    "occurrence": 0
-  },
-  {
-    "rule": "silent-clamp",
     "command": "weibo/feed",
     "file": "clis/weibo/feed.js",
     "line": 28,
@@ -828,7 +820,7 @@
     "command": "zhihu/collection",
     "file": "clis/zhihu/collection.js",
     "line": 131,
-    "text": "const pageLimit = Math.min(requestedLimit, 20); // 知乎 API 限制每页最大 20",
+    "text": "const pageLimit = Math.min(requestedLimit, 20); // \u77e5\u4e4e API \u9650\u5236\u6bcf\u9875\u6700\u5927 20",
     "occurrence": 0
   },
   {
@@ -1036,7 +1028,7 @@
     "command": "v2ex/daily",
     "file": "clis/v2ex/daily.js",
     "line": 93,
-    "text": "return [{ status: '🎉 签到成功', message: `当前余额: ${verifyResult.balance || '未知'}` }];",
+    "text": "return [{ status: '\ud83c\udf89 \u7b7e\u5230\u6210\u529f', message: `\u5f53\u524d\u4f59\u989d: ${verifyResult.balance || '\u672a\u77e5'}` }];",
     "occurrence": 0
   },
   {
@@ -1077,14 +1069,6 @@
     "file": "clis/web/read.js",
     "line": 375,
     "text": "lines.push(`url: ${diag.url || '-'}`);",
-    "occurrence": 0
-  },
-  {
-    "rule": "silent-sentinel",
-    "command": "weibo/comments",
-    "file": "clis/weibo/comments.js",
-    "line": 33,
-    "text": "if (!data.ok) return {error: 'API error: ' + (data.msg || 'unknown')};",
     "occurrence": 0
   },
   {

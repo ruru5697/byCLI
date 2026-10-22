@@ -251,6 +251,7 @@ describe('Page.getCurrentUrl', () => {
       session: 'site:chatgpt',
       surface: 'adapter',
       siteSession: 'persistent',
+      waitUntil: 'none',
     }));
     expect(sendCommandMock).toHaveBeenCalledWith('exec', expect.objectContaining({
       session: 'site:chatgpt',
@@ -683,5 +684,19 @@ describe('Page.screenshot', () => {
     expect(args.width).toBeUndefined();
     expect(args.height).toBeUndefined();
     expect(args.fullPage).toBeUndefined();
+  });
+});
+
+
+describe('Page.evaluateOnce', () => {
+  it('uses the no-retry transport and never retries a navigation error', async () => {
+    sendCommandOnceMock.mockReset(); sendCommandMock.mockReset();
+    sendCommandOnceMock.mockRejectedValue(new Error('Inspected target navigated or closed'));
+    const page = new Page('site:xiaohongshu', undefined, undefined, undefined, 'adapter', 'persistent');
+    page.setActivePage('confirmed-editor');
+    await expect(page.evaluateOnce('window.finalGesture()')).rejects.toThrow('navigated');
+    expect(sendCommandOnceMock).toHaveBeenCalledTimes(1);
+    expect(sendCommandOnceMock).toHaveBeenCalledWith('exec', expect.objectContaining({page:'confirmed-editor',surface:'adapter',siteSession:'persistent'}));
+    expect(sendCommandMock).not.toHaveBeenCalled();
   });
 });

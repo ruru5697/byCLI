@@ -1,0 +1,4 @@
+import {cli,Strategy} from '@sovovs/bycli/registry';
+import {collectArticleStats} from './_article-stats.js';
+export {ANALYTICS_URL,ARTICLE_METRICS,validateArticleStatsArgs,articleAnalyticsSnapshot,verifiedArticleMetrics,collectArticleStats} from './_article-stats.js';
+cli({site:'juejin',name:'stats',access:'read',description:'按精确文章ID采集掘金单篇分析数据，核对模型及可见表格，缺失分享数标为未提供',domain:'juejin.cn',strategy:Strategy.COOKIE,browser:true,navigateBefore:false,siteSession:'persistent',args:[{name:'content-id',required:true},{name:'account-id',required:true},{name:'type',default:'article',choices:['article']},{name:'scope',default:'content',choices:['content']},{name:'timeout',type:'int',default:180}],columns:['platform','contentId','contentType','scope','account','title','publishedAt','collectedAt','dataAsOf','period','source','metrics','limitations'],func:collectArticleStats});

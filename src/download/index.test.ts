@@ -132,6 +132,89 @@ describe('download helpers', { retry: process.platform === 'win32' ? 2 : 0 }, ()
     expect(fs.existsSync(mediaPath + '.tmp')).toBe(false);
   });
 
+  it.each([
+    ['application/vnd.apple.mpegurl', '#EXTM3U\n#EXTINF:1,\nvideo.ts'],
+    ['video/mp4', '#EXTM3U\nvideo.ts'],
+    ['application/dash+xml', '<MPD></MPD>'],
+  ])('rejects a playlist served as %s without replacing the destination', async (type, body) => {
+    const baseUrl = await startServer((_req, res) => { res.setHeader('Content-Type', type); res.end(body); });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bycli-playlist-')); tempDirs.push(dir);
+    const dest = path.join(dir, 'saved.mp4'); fs.writeFileSync(dest, 'previous');
+    const result = await httpDownload(baseUrl, dest, { validateMedia: true });
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining('playlist') });
+    expect(fs.readFileSync(dest, 'utf8')).toBe('previous');
+    expect(fs.readdirSync(dir)).toEqual(['saved.mp4']);
+  });
+
+  it('times out after headers while streaming, cleans up and preserves the old destination', async () => {
+    const baseUrl = await startServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'video/mp4' }); res.write('prefix');
+      const timer = setTimeout(() => res.end('late body'), 1000);
+      res.on('close', () => clearTimeout(timer));
+    });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bycli-timeout-')); tempDirs.push(dir);
+    const dest = path.join(dir, 'saved.mp4'); fs.writeFileSync(dest, 'previous');
+    const start = Date.now();
+    expect(await httpDownload(baseUrl, dest, { timeout: 100 })).toMatchObject({ success: false, error: 'Download timed out after 100ms' });
+    expect(Date.now() - start).toBeLessThan(900);
+    expect(fs.readFileSync(dest, 'utf8')).toBe('previous');
+    expect(fs.readdirSync(dir)).toEqual(['saved.mp4']);
+  });
+
+  it('uses a single deadline across redirects', async () => {
+    const baseUrl = await startServer((req, res) => {
+      const timer = setTimeout(() => { res.writeHead(302, { Location: '/' + (Number(req.url?.slice(1) || 0) + 1) }); res.end(); }, 70);
+      res.on('close', () => clearTimeout(timer));
+    });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bycli-deadline-')); tempDirs.push(dir);
+    expect(await httpDownload(baseUrl, path.join(dir, 'out'), { timeout: 180 })).toMatchObject({ success: false, error: 'Download timed out after 180ms' });
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+
+  it('rejects a truncated transfer and cleans up its partial file', async () => {
+    const baseUrl = await startServer((_req, res) => {
+      res.writeHead(200, { 'Content-Length': '1000' }); res.write('partial');
+      setTimeout(() => res.destroy(), 20);
+    });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bycli-truncated-')); tempDirs.push(dir);
+    expect(await httpDownload(baseUrl, path.join(dir, 'out'))).toMatchObject({ success: false });
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+
+  it('rejects a fake MP4 even when its content type looks valid', async () => {
+    const baseUrl = await startServer((_req, res) => { res.setHeader('Content-Type', 'video/mp4'); res.end('not a video'); });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bycli-mp4-')); tempDirs.push(dir);
+    expect(await httpDownload(baseUrl, path.join(dir, 'out.mp4'), { expectedMedia: 'mp4' })).toMatchObject({ success: false });
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+
+  it('does not let a concurrent failed transfer remove a successful file', async () => {
+    const baseUrl = await startServer((req, res) => {
+      if (req.url === '/good') { res.end('valid data'); return; }
+      res.setHeader('Content-Type', 'video/mp4'); res.write('prefix');
+      const timer = setTimeout(() => res.end('not an mp4'), 100);
+      res.on('close', () => clearTimeout(timer));
+    });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bycli-concurrent-')); tempDirs.push(dir);
+    const dest = path.join(dir, 'saved.mp4');
+    const [failed, good] = await Promise.all([
+      httpDownload(baseUrl + '/bad', dest, { expectedMedia: 'mp4' }),
+      httpDownload(baseUrl + '/good', dest),
+    ]);
+    expect(failed.success).toBe(false); expect(good.success).toBe(true);
+    expect(fs.readFileSync(dest, 'utf8')).toBe('valid data');
+    expect(fs.readdirSync(dir)).toEqual(['saved.mp4']);
+  });
+
+  it('strips authorization on a different origin even when the hostname is the same', async () => {
+    let authorization: string | undefined;
+    const target = await startServer((req, res) => { authorization = req.headers.authorization; res.end('ok'); });
+    const source = await startServer((_req, res) => { res.writeHead(302, { Location: target }); res.end(); });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bycli-origin-')); tempDirs.push(dir);
+    expect(await httpDownload(source, path.join(dir, 'out'), { headers: { Authorization: 'Bearer synthetic' } })).toMatchObject({ success: true });
+    expect(authorization).toBeUndefined();
+  });
+
   it('bypasses proxy settings for loopback downloads', async () => {
     vi.stubEnv('HTTP_PROXY', 'http://127.0.0.1:9');
 

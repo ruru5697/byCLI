@@ -37,6 +37,8 @@ export interface DaemonCommand {
   /** Adapter site session lifecycle. Persistent site sessions do not idle-expire. */
   siteSession?: 'ephemeral' | 'persistent';
   url?: string;
+  /** Navigation wait policy. 'none' returns after the guarded tab update starts. */
+  waitUntil?: 'load' | 'none';
   op?: string;
   index?: number;
   domain?: string;
@@ -389,12 +391,13 @@ export async function sendCommand(
   return result.data;
 }
 
-/** Execute an irreversible gesture without transport retries. */
+/** A single transport attempt for irreversible gestures. Never retries an uncertain dispatch. */
 export async function sendCommandOnce(
   action: DaemonCommand['action'],
   params: Omit<DaemonCommand, 'id' | 'action'> = {},
 ): Promise<unknown> {
-  return (await sendCommandRaw(action, params, { retry: false })).data;
+  const result = await sendCommandRaw(action, params, { retry: false });
+  return result.data;
 }
 
 /**

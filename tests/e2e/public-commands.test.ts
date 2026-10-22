@@ -3,7 +3,7 @@
  * These commands use Node.js fetch directly — no browser needed.
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, type TestContext } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -42,9 +42,20 @@ function isExpectedPublicNetworkRestriction(code: number, output: string): boole
   return /fetch failed|Connect Timeout Error|operation was aborted|\bHTTP 5\d{2}\b|\b(?:AbortError|TimeoutError|ENOTFOUND|EAI_AGAIN|ECONNRESET|ETIMEDOUT|timed? ?out)\b/i.test(output);
 }
 
-async function runPublicJsonCommand(args: string[], label: string): Promise<any | null> {
+function isExpectedDictionaryRestriction(code: number, output: string): boolean {
+  if (code === 0) return false;
+  return /(?:code:\s*FETCH_ERROR|Error \[FETCH_ERROR\])/.test(output)
+    && /HTTP 403 Forbidden from https:\/\/api\.dictionaryapi\.dev\/api\/v2\/entries\/en\//.test(output);
+}
+
+async function runPublicJsonCommand(args: string[], label: string, context?: Pick<TestContext, 'skip'>): Promise<any | null> {
   const { stdout, stderr, code } = await runCli(args, { timeout: 25_000 });
   const output = `${stderr}\n${stdout}`;
+  if (args[0] === 'dictionary' && isExpectedDictionaryRestriction(code, output)) {
+    if (!context) throw new Error(`${label}: dictionary endpoint rejected access, but no test skip context was supplied`);
+    context.skip('Dictionary public endpoint returned HTTP 403 Forbidden');
+    return null;
+  }
   if (isExpectedPublicNetworkRestriction(code, output)) {
     console.warn(`${label} skipped: public endpoint unavailable`);
     return null;
@@ -59,6 +70,15 @@ async function runPublicJsonCommand(args: string[], label: string): Promise<any 
 const isExpectedXiaoyuzhouRestriction = isExpectedChineseSiteRestriction;
 
 describe('public command restriction detectors', () => {
+  it('only recognizes the dictionary endpoint access denial as a skippable restriction', () => {
+    const denied = 'code: FETCH_ERROR\nmessage: HTTP 403 Forbidden from https://api.dictionaryapi.dev/api/v2/entries/en/serendipity';
+    expect(isExpectedDictionaryRestriction(1, denied)).toBe(true);
+    expect(isExpectedDictionaryRestriction(0, denied)).toBe(false);
+    expect(isExpectedDictionaryRestriction(1, denied.replace('FETCH_ERROR', 'PARSE_ERROR'))).toBe(false);
+    expect(isExpectedDictionaryRestriction(1, denied.replace('api.dictionaryapi.dev', 'other.example'))).toBe(false);
+    expect(isExpectedDictionaryRestriction(1, denied.replace('403 Forbidden', '404 Not Found'))).toBe(false);
+  });
+
   it('treats current Apple Podcasts CliError rendering as an expected restriction', () => {
     expect(
       isExpectedApplePodcastsRestriction(
@@ -514,8 +534,8 @@ describe('public commands E2E', () => {
   }, 30_000);
 
   // ── dictionary (public API, browser: false) ──
-  it('dictionary search returns word definitions', async () => {
-    const data = await runPublicJsonCommand(['dictionary', 'search', 'serendipity', '-f', 'json'], 'dictionary search');
+  it('dictionary search returns word definitions', async (context) => {
+    const data = await runPublicJsonCommand(['dictionary', 'search', 'serendipity', '-f', 'json'], 'dictionary search', context);
     if (!data) return;
     expect(Array.isArray(data)).toBe(true);
     expect(data.length).toBeGreaterThanOrEqual(1);
@@ -524,8 +544,8 @@ describe('public commands E2E', () => {
     expect(data[0]).toHaveProperty('definition');
   }, 30_000);
 
-  it('dictionary synonyms returns synonyms', async () => {
-    const data = await runPublicJsonCommand(['dictionary', 'synonyms', 'serendipity', '-f', 'json'], 'dictionary synonyms');
+  it('dictionary synonyms returns synonyms', async (context) => {
+    const data = await runPublicJsonCommand(['dictionary', 'synonyms', 'serendipity', '-f', 'json'], 'dictionary synonyms', context);
     if (!data) return;
     expect(Array.isArray(data)).toBe(true);
     expect(data.length).toBeGreaterThanOrEqual(1);
@@ -533,8 +553,8 @@ describe('public commands E2E', () => {
     expect(data[0]).toHaveProperty('synonyms');
   }, 30_000);
 
-  it('dictionary examples returns examples', async () => {
-    const data = await runPublicJsonCommand(['dictionary', 'examples', 'perfect', '-f', 'json'], 'dictionary examples');
+  it('dictionary examples returns examples', async (context) => {
+    const data = await runPublicJsonCommand(['dictionary', 'examples', 'perfect', '-f', 'json'], 'dictionary examples', context);
     if (!data) return;
     expect(Array.isArray(data)).toBe(true);
     expect(data.length).toBeGreaterThanOrEqual(1);

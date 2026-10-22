@@ -1,6 +1,6 @@
 {
   "name": "@sovovs/bycli",
-  "version": "2.1.69",
+  "version": "2.1.71",
   "publishConfig": {
     "access": "public"
   },
@@ -53,7 +53,8 @@
     "LICENSE",
     "NOTICE",
     "!**/*.test.js",
-    "!**/*.e2e.test.js"
+    "!**/*.e2e.test.js",
+    "!scripts/verify-native-*.mjs"
   ],
   "scripts": {
     "dev": "tsx src/main.ts",
@@ -102,11 +103,11 @@
     "@sovovs/wechat-article-crawler": "^1.1.3",
     "cli-table3": "^0.6.5",
     "commander": "^14.0.3",
-    "js-yaml": "^4.1.0",
+    "js-yaml": "^4.3.2",
     "parse5": "^7.3.0",
     "turndown": "^7.2.2",
     "turndown-plugin-gfm": "^1.0.2",
-    "undici": "^6.25.0",
+    "undici": "^6.29.1",
     "ws": "^8.18.0"
   },
   "devDependencies": {

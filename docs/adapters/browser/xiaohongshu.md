@@ -56,3 +56,10 @@ bycli xiaohongshu delete-note 6a08ba0b000000000702a893 --execute
 
 - Chrome running and **logged into** xiaohongshu.com
 - [Browser Bridge extension](/guide/browser-bridge) installed
+
+
+## Native creator publishing and per-note metrics
+
+`publish-video` and `publish-images` provide separate prepare, review, single-submit and status modes. `stats --type video|image --content-id ID --account-id PUBLIC_ID --scope content` reads the exact owner note. Explicit human approval is required after checking the prepared content; a review token does not grant permission. Keep unknown attempts locked and reconcile through the owner manager.
+
+See [native connector workflow](../../guide/native-connectors.md), [video preparation](../../advanced/video-publish-prepare.md), and [image preparation](../../advanced/image-publish-prepare.md). Low-volume or unavailable analytics remain null; image notes preserve the platform viewing label and omit video-only completion metrics. Downloading a video uses a current signed full URL or xhslink and native MP4 validation.

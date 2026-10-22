@@ -68,7 +68,8 @@ const AUTO_ATTACH_IFRAME_PARAMS = {
   autoAttach: true,
   waitForDebuggerOnStart: true,
   flatten: true,
-  filter: [{ type: 'iframe', exclude: false }],
+  // TargetFilter defaults to including unmatched targets. Explicitly exclude workers.
+  filter: [{ type: 'iframe', exclude: false }, { exclude: true }],
 } as const;
 
 // Large cap so agents stop hitting silent JSON.parse failures on real API bodies.
@@ -729,7 +730,8 @@ async function ensureFrameTarget(
     autoAttach: true,
     waitForDebuggerOnStart: captureActive,
     flatten: true,
-    filter: [{ type: 'iframe', exclude: false }],
+    // TargetFilter defaults to including unmatched targets. Explicitly exclude workers.
+    filter: [{ type: 'iframe', exclude: false }, { exclude: true }],
   }).catch(() => {});
   const targetId = await resolveFrameTargetId(tabId, frameId, targetUrl);
   try {

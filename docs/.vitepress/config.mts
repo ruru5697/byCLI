@@ -2,6 +2,7 @@ import { defineConfig } from 'vitepress'
 
 export default defineConfig({
   base: '/docs/',
+  srcExclude: ['research/connector-native/**'],
   title: 'byCLI',
   description: 'Make any website or Electron App your CLI — AI-powered, account-safe, self-healing.',
 
@@ -31,6 +32,7 @@ export default defineConfig({
                 { text: 'Installation', link: '/guide/installation' },
                 { text: 'Comparison', link: '/comparison' },
                 { text: 'Browser Bridge', link: '/guide/browser-bridge' },
+                { text: 'Native Content Connectors', link: '/guide/native-connectors' },
                 { text: 'Remote Orchestration', link: '/guide/remote-orchestration' },
                 { text: 'Troubleshooting', link: '/guide/troubleshooting' },
                 { text: 'Add an Electron App CLI', link: '/guide/electron-app-cli' },
@@ -57,6 +59,9 @@ export default defineConfig({
                 { text: 'Zhihu', link: '/adapters/browser/zhihu' },
                 { text: 'Baijiahao', link: '/adapters/browser/baijiahao' },
                 { text: 'Xiaohongshu', link: '/adapters/browser/xiaohongshu' },
+                { text: 'Sohu', link: '/adapters/browser/sohu' },
+                { text: 'Juejin', link: '/adapters/browser/juejin' },
+                { text: 'CSDN', link: '/adapters/browser/csdn' },
                 { text: 'Rednote', link: '/adapters/browser/rednote' },
                 { text: 'Xiaoe', link: '/adapters/browser/xiaoe' },
                 { text: 'Weibo', link: '/adapters/browser/weibo' },

@@ -101,6 +101,7 @@ export class Page extends BasePage {
     try {
       result = await sendCommandFull('navigate', {
         url,
+        ...(options?.waitUntil && { waitUntil: options.waitUntil }),
         ...this._cmdOpts(),
       });
     } catch (err) {
@@ -113,6 +114,7 @@ export class Page extends BasePage {
       this._page = undefined;
       result = await sendCommandFull('navigate', {
         url,
+        ...(options?.waitUntil && { waitUntil: options.waitUntil }),
         ...this._cmdOpts(),
       });
     }
@@ -205,14 +207,14 @@ export class Page extends BasePage {
     }
   }
 
+  /** Execute an irreversible gesture without page-level or transport retries. */
+  async evaluateOnce<T = unknown>(js: string): Promise<T> {
+    return await sendCommandOnce('exec', { code: buildEvaluateExpression(js, []), ...this._cmdOpts() }) as T;
+  }
+
   async getCookies(opts: { domain?: string; url?: string } = {}): Promise<BrowserCookie[]> {
     const result = await sendCommand('cookies', { ...this._sessionOpts(), ...opts });
     return Array.isArray(result) ? result : [];
-  }
-
-  /** Execute a UI gesture once, without navigation or transport retries. */
-  async evaluateOnce(js: string): Promise<unknown> {
-    return sendCommandOnce('exec', { code: buildEvaluateExpression(js, []), ...this._cmdOpts() });
   }
 
   async focusWindow(): Promise<void> {

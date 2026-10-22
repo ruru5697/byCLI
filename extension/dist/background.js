@@ -264,7 +264,8 @@ const AUTO_ATTACH_IFRAME_PARAMS = {
   autoAttach: true,
   waitForDebuggerOnStart: true,
   flatten: true,
-  filter: [{ type: "iframe", exclude: false }]
+  // TargetFilter defaults to including unmatched targets. Explicitly exclude workers.
+  filter: [{ type: "iframe", exclude: false }, { exclude: true }]
 };
 const CDP_RESPONSE_BODY_CAPTURE_LIMIT = 8 * 1024 * 1024;
 const CDP_REQUEST_BODY_CAPTURE_LIMIT = 1 * 1024 * 1024;
@@ -717,7 +718,8 @@ async function ensureFrameTarget(tabId, frameId, aggressiveRetry = false, target
     autoAttach: true,
     waitForDebuggerOnStart: captureActive,
     flatten: true,
-    filter: [{ type: "iframe", exclude: false }]
+    // TargetFilter defaults to including unmatched targets. Explicitly exclude workers.
+    filter: [{ type: "iframe", exclude: false }, { exclude: true }]
   }).catch(() => {
   });
   const targetId = await resolveFrameTargetId(tabId, frameId, targetUrl);
@@ -2983,7 +2985,7 @@ async function handleNavigateUnlocked(cmd, leaseKey) {
   }
   await chrome.tabs.update(tabId, { url: targetUrl });
   let timedOut = false;
-  await new Promise((resolve) => {
+  if (cmd.waitUntil !== "none") await new Promise((resolve) => {
     let settled = false;
     let checkTimer = null;
     let blockTimer = null;

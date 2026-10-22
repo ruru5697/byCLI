@@ -33,6 +33,8 @@ export async function runCli(
     const { stdout, stderr } = await exec(runtime, [MAIN, ...args], {
       cwd: ROOT,
       timeout,
+      // The full command manifest exceeds execFile's default 1 MiB limit.
+      maxBuffer: 16 * 1024 * 1024,
       env: {
         ...process.env,
         // Prevent chalk colors from polluting test assertions
