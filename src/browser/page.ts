@@ -17,7 +17,7 @@ import type {
   BrowserEvaluateFunction,
   ScreenshotOptions,
 } from '../types.js';
-import { fetchDaemonStatus, sendCommand, sendCommandFull } from './daemon-client.js';
+import { fetchDaemonStatus, sendCommand, sendCommandFull, sendCommandOnce } from './daemon-client.js';
 import { CONSOLE_CAPTURE_CAPABILITY, extensionCapabilityHint, FOCUS_WINDOW_CAPABILITY } from './extension-capabilities.js';
 import { buildEvaluateExpression } from './utils.js';
 import { saveBase64ToFile } from '../utils.js';
@@ -208,6 +208,11 @@ export class Page extends BasePage {
   async getCookies(opts: { domain?: string; url?: string } = {}): Promise<BrowserCookie[]> {
     const result = await sendCommand('cookies', { ...this._sessionOpts(), ...opts });
     return Array.isArray(result) ? result : [];
+  }
+
+  /** Execute a UI gesture once, without navigation or transport retries. */
+  async evaluateOnce(js: string): Promise<unknown> {
+    return sendCommandOnce('exec', { code: buildEvaluateExpression(js, []), ...this._cmdOpts() });
   }
 
   async focusWindow(): Promise<void> {
@@ -536,6 +541,25 @@ export class Page extends BasePage {
       button: 'left',
       clickCount: 1,
     });
+  }
+
+  /** A single browser input gesture. Never replay a press after a lost response. */
+  async nativeClickOnce(x: number, y: number): Promise<void> {
+    if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0) {
+      throw new Error('Native click requires finite nonnegative viewport coordinates');
+    }
+    const dispatch = (params: Record<string, unknown>) => sendCommandOnce('cdp', {
+      cdpMethod: 'Input.dispatchMouseEvent', cdpParams: { x, y, ...params }, ...this._cmdOpts(),
+    });
+    await dispatch({ type: 'mouseMoved' });
+    // Release even if the press response is lost: finish the same gesture,
+    // without another press or leaving the shared browser button held down.
+    let pressError: unknown;
+    try { await dispatch({ type: 'mousePressed', button: 'left', buttons: 1, clickCount: 1 }); }
+    catch (error) { pressError = error; }
+    try { await dispatch({ type: 'mouseReleased', button: 'left', buttons: 0, clickCount: 1 }); }
+    catch (error) { if (!pressError) throw error; }
+    if (pressError) throw pressError;
   }
 
   async nativeType(text: string): Promise<void> {

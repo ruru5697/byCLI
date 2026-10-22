@@ -318,8 +318,9 @@ export async function requestDaemonShutdown(opts?: { timeout?: number }): Promis
 async function sendCommandRaw(
   action: DaemonCommand['action'],
   params: Omit<DaemonCommand, 'id' | 'action'>,
+  options: { retry?: boolean } = {},
 ): Promise<DaemonResult> {
-  const maxRetries = 4;
+  const maxRetries = options.retry === false ? 1 : 4;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     const id = generateId();
@@ -386,6 +387,14 @@ export async function sendCommand(
 ): Promise<unknown> {
   const result = await sendCommandRaw(action, params);
   return result.data;
+}
+
+/** Execute an irreversible gesture without transport retries. */
+export async function sendCommandOnce(
+  action: DaemonCommand['action'],
+  params: Omit<DaemonCommand, 'id' | 'action'> = {},
+): Promise<unknown> {
+  return (await sendCommandRaw(action, params, { retry: false })).data;
 }
 
 /**
