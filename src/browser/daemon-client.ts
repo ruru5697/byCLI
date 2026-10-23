@@ -420,3 +420,20 @@ export async function bindTab(session: string, opts: { contextId?: string } = {}
   const result = await sendCommandFull('bind', { session, surface: 'browser', ...opts });
   return { ...(result.data && typeof result.data === 'object' ? result.data : {}), page: result.page };
 }
+
+/** Ask the daemon to drop the extension socket so it re-handshakes with its capabilities. */
+export async function requestExtensionReconnect(opts: { contextId: string; timeout?: number }): Promise<boolean> {
+  if (!opts.contextId.trim()) return false;
+  try {
+    const response = await requestDaemon('/extension/reconnect', {
+      method: 'POST', timeout: opts.timeout ?? 5_000,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contextId: opts.contextId }),
+    });
+    if (!response.ok) return false;
+    const envelope = await response.json() as { ok?: boolean };
+    return envelope.ok === true;
+  } catch {
+    return false;
+  }
+}

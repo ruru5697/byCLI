@@ -9,6 +9,7 @@ import {
   heartbeatAdapterLease,
   releaseAdapterLease,
   requestDaemonShutdown,
+  requestExtensionReconnect,
   sendCommand,
   sendCommandOnce,
 } from './daemon-client.js';
@@ -73,6 +74,19 @@ describe('daemon-client', () => {
         headers: expect.objectContaining({ 'X-byCLI': '1' }),
       }),
     );
+  });
+
+  it('requests reconnection for an explicit profile with the daemon header',async()=>{
+    vi.mocked(fetch).mockResolvedValue({ok:true,json:async()=>({ok:true})} as Response);
+    await expect(requestExtensionReconnect({contextId:'profile-a'})).resolves.toBe(true);
+    expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/\/extension\/reconnect$/),expect.objectContaining({method:'POST',headers:expect.objectContaining({'X-byCLI':'1'}),body:JSON.stringify({contextId:'profile-a'})}));
+  });
+  it('reports a refused reconnect and never requests an unspecified profile',async()=>{
+    vi.mocked(fetch).mockResolvedValue({ok:false} as Response);
+    await expect(requestExtensionReconnect({contextId:'profile-a'})).resolves.toBe(false);
+    vi.mocked(fetch).mockClear();
+    await expect(requestExtensionReconnect({contextId:' '})).resolves.toBe(false);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it('acquires, heartbeats, and releases Adapter command leases through daemon endpoints', async () => {
