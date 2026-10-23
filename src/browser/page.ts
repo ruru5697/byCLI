@@ -17,8 +17,9 @@ import type {
   BrowserEvaluateFunction,
   ScreenshotOptions,
 } from '../types.js';
-import { fetchDaemonStatus, sendCommand, sendCommandFull, sendCommandOnce } from './daemon-client.js';
-import { CONSOLE_CAPTURE_CAPABILITY, extensionCapabilityHint, FOCUS_WINDOW_CAPABILITY } from './extension-capabilities.js';
+import { fetchDaemonStatus, requestExtensionReconnect, sendCommand, sendCommandFull, sendCommandOnce } from './daemon-client.js';
+import { isExtensionCapabilityMissing, recoverExtensionCapability } from './extension-recovery.js';
+import { CONSOLE_CAPTURE_CAPABILITY, extensionCapabilityHint, FILE_INPUT_SHADOW_CAPABILITY, FOCUS_WINDOW_CAPABILITY } from './extension-capabilities.js';
 import { buildEvaluateExpression } from './utils.js';
 import { saveBase64ToFile } from '../utils.js';
 import { generateStealthJs } from './stealth.js';
@@ -430,10 +431,33 @@ export class Page extends BasePage {
    * payload size limits of base64-in-evaluate.
    */
   async setFileInput(files: string[], selector?: string): Promise<void> {
+    try {
+      await this.#setFileInputOnce(files, selector);
+    } catch (err) {
+      if (!isExtensionCapabilityMissing(err) || !(err instanceof Error) || !err.message.includes(FILE_INPUT_SHADOW_CAPABILITY)) throw err;
+      // Pin recovery to the profile that handled the upload, even when no profile was explicit.
+      const status = await fetchDaemonStatus(this.contextId ? { contextId: this.contextId } : undefined).catch(() => undefined);
+      const contextId = this.contextId ?? status?.contextId;
+      if (!contextId) throw err;
+      const recovered = await recoverExtensionCapability(FILE_INPUT_SHADOW_CAPABILITY, {
+        contextId,
+        requestReconnect: () => requestExtensionReconnect({ contextId }),
+        fetchCapabilities: async () => {
+          const status = await fetchDaemonStatus({ contextId });
+          return Array.isArray(status?.extensionCapabilities) ? status.extensionCapabilities : undefined;
+        },
+      });
+      if (!recovered) throw err;
+      await this.#setFileInputOnce(files, selector, contextId);
+    }
+  }
+
+  async #setFileInputOnce(files: string[], selector?: string, contextId?: string): Promise<void> {
     const result = await sendCommand('set-file-input', {
       files,
       selector,
       ...this._cmdOpts(),
+      ...(contextId ? { contextId } : {}),
     }) as { count?: number };
     if (!result?.count) {
       throw new Error('setFileInput returned no count — command may not be supported by the extension');

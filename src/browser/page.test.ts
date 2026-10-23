@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { fetchDaemonStatusMock, sendCommandMock, sendCommandFullMock, sendCommandOnceMock } = vi.hoisted(() => ({
+const { fetchDaemonStatusMock, sendCommandMock, sendCommandFullMock, sendCommandOnceMock, requestExtensionReconnectMock } = vi.hoisted(() => ({
   fetchDaemonStatusMock: vi.fn(),
+  requestExtensionReconnectMock: vi.fn(),
   sendCommandMock: vi.fn(),
   sendCommandFullMock: vi.fn(),
   sendCommandOnceMock: vi.fn(),
@@ -12,6 +13,7 @@ const { warnMock } = vi.hoisted(() => ({
 
 vi.mock('./daemon-client.js', () => ({
   fetchDaemonStatus: fetchDaemonStatusMock,
+  requestExtensionReconnect: requestExtensionReconnectMock,
   sendCommand: sendCommandMock,
   sendCommandFull: sendCommandFullMock,
   sendCommandOnce: sendCommandOnceMock,
@@ -731,4 +733,41 @@ describe('Page.evaluateOnce', () => {
     expect(sendCommandOnceMock).toHaveBeenCalledWith('exec', expect.objectContaining({page:'confirmed-editor',surface:'adapter',siteSession:'persistent'}));
     expect(sendCommandMock).not.toHaveBeenCalled();
   });
+});
+
+
+describe('Page file upload recovery',()=>{
+ beforeEach(()=>{fetchDaemonStatusMock.mockReset();sendCommandMock.mockReset();requestExtensionReconnectMock.mockReset();});
+ const missing=()=>new Error('Connected Browser Bridge does not advertise file-input-shadow-v1.');
+ it('recovers only the selected profile and retries the same upload once',async()=>{
+  sendCommandMock.mockRejectedValueOnce(missing()).mockResolvedValueOnce({count:1});
+  fetchDaemonStatusMock.mockResolvedValue({contextId:'profile-a',extensionCapabilities:[]}).mockResolvedValueOnce({contextId:'profile-a',extensionCapabilities:[]}).mockResolvedValueOnce({contextId:'profile-a',extensionCapabilities:[]}).mockResolvedValueOnce({contextId:'profile-a',extensionCapabilities:['file-input-shadow-v1']});
+  requestExtensionReconnectMock.mockResolvedValue(true);
+  const page=new Page('publisher',undefined,'profile-a',undefined,'adapter');page.setActivePage('exact-editor');
+  await page.setFileInput(['/tmp/cover.png'],'#cover');
+  expect(requestExtensionReconnectMock).toHaveBeenCalledExactlyOnceWith({contextId:'profile-a'});
+  expect(sendCommandMock).toHaveBeenCalledTimes(2);
+  for(const [action,params] of sendCommandMock.mock.calls){expect(action).toBe('set-file-input');expect(params).toMatchObject({files:['/tmp/cover.png'],selector:'#cover',page:'exact-editor',contextId:'profile-a',surface:'adapter'});}
+ });
+ it('does not replay a transport failure after file injection',async()=>{
+  sendCommandMock.mockRejectedValue(new Error('connection reset'));
+  await expect(new Page('publisher').setFileInput(['/tmp/cover.png'])).rejects.toThrow('connection reset');
+  expect(sendCommandMock).toHaveBeenCalledTimes(1);expect(requestExtensionReconnectMock).not.toHaveBeenCalled();
+ });
+ it('preserves the original error when recovery is refused for a busy profile',async()=>{
+  const error=missing();sendCommandMock.mockRejectedValue(error);
+  fetchDaemonStatusMock.mockResolvedValue({contextId:'profile-a',extensionCapabilities:[]});requestExtensionReconnectMock.mockResolvedValue(false);
+  await expect(new Page('publisher',undefined,'profile-a').setFileInput(['/tmp/cover.png'])).rejects.toBe(error);
+  expect(sendCommandMock).toHaveBeenCalledTimes(1);
+ });
+ it('does not choose a profile when status is ambiguous',async()=>{
+  const error=missing();sendCommandMock.mockRejectedValue(error);fetchDaemonStatusMock.mockResolvedValue({profileRequired:true});
+  await expect(new Page('publisher').setFileInput(['/tmp/cover.png'])).rejects.toBe(error);
+  expect(requestExtensionReconnectMock).not.toHaveBeenCalled();
+ });
+ it('does not retry an upload more than once if the capability is still rejected',async()=>{
+  sendCommandMock.mockRejectedValue(missing());fetchDaemonStatusMock.mockResolvedValue({contextId:'profile-a',extensionCapabilities:['file-input-shadow-v1']});
+  await expect(new Page('publisher',undefined,'profile-a').setFileInput(['/tmp/cover.png'])).rejects.toThrow('does not advertise');
+  expect(sendCommandMock).toHaveBeenCalledTimes(2);expect(requestExtensionReconnectMock).not.toHaveBeenCalled();
+ });
 });

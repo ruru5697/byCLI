@@ -49,5 +49,5 @@ export function extensionCapabilityHint(capability: string): string {
   if (capability === IMA_READER_CAPABILITY) {
     return 'Update and reload the byCLI Browser Bridge extension with private ima reader support, then retry.';
   }
-  return 'Update and reload the byCLI Browser Bridge extension, then retry.';
+  return 'The Browser Bridge is missing a required capability. Uploads try to refresh the current profile handshake when it is idle; if this persists, update and reload the Browser Bridge extension at chrome://extensions, then retry.';
 }
