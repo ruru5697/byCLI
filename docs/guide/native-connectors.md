@@ -68,3 +68,8 @@ bycli csdn stats --content-id ARTICLE_ID --account-id PUBLIC_AUTHOR --type artic
 微博、头条的新增命令使用各自的参数与确认流程，不套用本文四平台的job/review协议。微博长文章入口只保存草稿；图文和视频以及头条发布入口默认预检，显式 `--execute` 才执行。旧 `weibo publish` 会直接执行发布，使用前仍须确认具体内容。
 
 完整参数、统计口径与边界见[微博](../adapters/browser/weibo.md)、[今日头条](../adapters/browser/toutiao.md)和[ima知识库状态](../adapters/browser/ima.md#status)。
+
+
+## 搜狐号关键词检索
+
+`bycli sohu search "关键词" --type article|video|gallery --status published|all|draft`检索当前登录账号的标题；`bycli sohu search-public "关键词" --limit 15`检索搜狐综合公开索引。账号结果绑定精确ID和所属账号；公开结果剔除平台回退推荐，不保证全量收录，也不提供未经验证的公开类型筛选。详见[搜狐号账号检索与公开检索](../advanced/sohu-search.md)。
