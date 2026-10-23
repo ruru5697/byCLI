@@ -1,6 +1,6 @@
 /** Read stable engagement metrics for a Weibo post. */
 import { cli, Strategy } from '@sovovs/bycli/registry';
-import { AuthRequiredError, CommandExecutionError, EmptyResultError } from '@sovovs/bycli/errors';
+import { AuthRequiredError, CommandExecutionError, EmptyResultError, CliError } from '@sovovs/bycli/errors';
 import { normalizeWeiboTarget, requireObjectEvaluateResult, unwrapEvaluateResult } from './utils.js';
 
 export const WEIBO_STATS_COLUMNS = [
@@ -22,6 +22,11 @@ export async function runWeiboStats(page, kwargs, contentType = 'short') {
         if (!resp.ok) return { error: 'HTTP ' + resp.status };
         const s = await resp.json();
         if (!s.ok && !s.idstr && !s.id) return { missing: true };
+        const metric = value => {
+          if (!['number','string'].includes(typeof value) || String(value).trim() === '') return null;
+          const n = Number(value);
+          return Number.isSafeInteger(n) && n >= 0 ? n : null;
+        };
         const u = s.user || {};
         const pageInfo = s.page_info || {};
         const mediaInfo = pageInfo.media_info || {};
@@ -36,9 +41,10 @@ export async function runWeiboStats(page, kwargs, contentType = 'short') {
             ? 'video'
             : hasImages
               ? 'image'
-              : hasLongText && requestedType !== 'image'
+              : hasLongText
                 ? 'article'
-                : (requestedType || 'short');
+                : 'short';
+        if (requestedType !== 'short' && detectedContentType !== requestedType) return {typeMismatch:true, expected:requestedType, actual:detectedContentType};
         return {
           id: String(s.idstr || s.id || id),
           mblogid: s.mblogid || (${JSON.stringify(target.mblogid)}),
@@ -48,18 +54,24 @@ export async function runWeiboStats(page, kwargs, contentType = 'short') {
           created_at: String(s.created_at || ''),
           content_type: detectedContentType,
           requested_content_type: ${JSON.stringify(contentType)},
-          reposts: Number(s.reposts_count ?? 0),
-          comments: Number(s.comments_count ?? 0),
-          likes: Number(s.attitudes_count ?? 0),
-          collects: Number(s.collect_count ?? s.favorites_count ?? 0),
-          views: s.read_count == null ? null : Number(s.read_count),
-          video_plays: s.play_count == null ? (s.video_play_count == null ? null : Number(s.video_play_count)) : Number(s.play_count),
+          reposts: metric(s.reposts_count),
+          comments: metric(s.comments_count),
+          likes: metric(s.attitudes_count),
+          collects: metric(s.collect_count ?? s.favorites_count),
+          views: metric(s.read_count),
+          // Two live video statuses pair this numeric field with “次观看”
+          // (43817 / 4.3万次观看 and 12272 / 1.2万次观看). Require the
+          // matching label: online_users must not imply concurrent viewers.
+          video_plays: metric(s.play_count ?? s.video_play_count ??
+              (hasVideo && /次观看/.test(String(mediaInfo.online_users || ''))
+                ? mediaInfo.online_users_number : null)),
           visibility: s.visible?.type === 0 ? 'public' : (s.visible?.type == null ? null : String(s.visible.type)),
           observed_at: new Date().toISOString(),
         };
       })()
     `)), 'weibo stats');
     if (data.auth) throw new AuthRequiredError('weibo.com');
+    if (data.typeMismatch) throw new CliError('CONTENT_TYPE_MISMATCH', `Expected ${data.expected} but status media identifies ${data.actual}`);
     if (data.missing) throw new EmptyResultError('weibo stats', `Post ${lookup} was not found`);
     if (data.error) throw new CommandExecutionError(String(data.error));
     return [data];
