@@ -906,5 +906,14 @@
     "missing": [
       "valid_until"
     ]
+  },
+  {
+    "command": "sohu/editor",
+    "file": "clis/sohu/editor.js",
+    "missing": [
+      "className",
+      "tag"
+    ],
+    "reason": "Nested actions diagnostics are retained inside the declared actions column, not emitted as top-level row fields."
   }
 ]

@@ -1142,5 +1142,14 @@
     "line": 31,
     "text": "title: `[${d.action || 'unknown'}]`,",
     "occurrence": 0
+  },
+  {
+    "rule": "silent-empty-fallback",
+    "command": "sohu/editor",
+    "file": "clis/sohu/editor.js",
+    "line": 22,
+    "text": "let entries;try{entries=await fs.readdir(root)}catch(e){if(e.code==='ENOENT')return [];throw e}",
+    "occurrence": 0,
+    "reason": "An absent local publish-jobs directory means no recorded jobs; other filesystem errors are rethrown."
   }
 ]
