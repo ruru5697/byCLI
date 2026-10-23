@@ -6,6 +6,46 @@ import {ArgumentError,CliError} from '@sovovs/bycli/errors';
 import {imageDimensions} from '../_shared/image-prepare.js';
 import {waitFor,clickText,fillVerified} from '../_shared/video-prepare.js';
 const hash=x=>createHash('sha256').update(x).digest('hex');
+/** Only normalize padding around cells in recognized, simple Markdown tables. */
+export function normalizeMarkdownForCompare(value){
+ const lines=String(value??'').replace(/\r\n?/g,'\n').split('\n');
+ let fence=null;
+ const protectedLines=lines.map(line=>{
+  const marker=/^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+  if(fence){if(marker&&marker[1][0]===fence.char&&marker[1].length>=fence.length&&!marker[2].trim())fence=null;return true;}
+  if(marker){fence={char:marker[1][0],length:marker[1].length};return true;}
+  return false;
+ });
+ const cells=line=>/^ {0,3}\|.*\|[ \t]*$/.test(line)&&!/[`\\]/.test(line)?line.trim().slice(1,-1).split('|'):null;
+ for(let i=1;i<lines.length;i++){
+  if(protectedLines[i]||protectedLines[i-1])continue;
+  const separator=cells(lines[i]),header=cells(lines[i-1]);
+  if(!separator||!header||separator.length!==header.length||!separator.every(cell=>/^[ \t]*:?-{3,}:?[ \t]*$/.test(cell)))continue;
+  const normalize=row=>'|'+cells(row).map(cell=>cell.replace(/^[ \t]+|[ \t]+$/g,'')).join('|')+'|';
+  lines[i-1]=normalize(lines[i-1]);lines[i]=normalize(lines[i]);
+  let j=i+1;
+  while(j<lines.length&&!protectedLines[j]&&cells(lines[j])?.length===header.length){lines[j]=normalize(lines[j]);j++;}
+  i=j-1;
+ }
+ // A terminal newline outside a code fence does not alter Markdown content.
+ if(!fence)while(lines.length&&lines[lines.length-1]==='')lines.pop();
+ return lines.join('\n');
+}
+export function compareMarkdown(expected,actual){
+ const a=String(expected??''),b=String(actual??'');
+ if(a===b)return{ok:true,cosmetic:false,offset:0,context:''};
+ if(normalizeMarkdownForCompare(a)===normalizeMarkdownForCompare(b))return{ok:true,cosmetic:true,offset:0,context:''};
+ let offset=0;const max=Math.min(a.length,b.length);
+ while(offset<max&&a[offset]===b[offset])offset++;
+ return{ok:false,cosmetic:false,offset,context:JSON.stringify(b.slice(Math.max(0,offset-20),offset+40))};
+}
+/** Turn a silent tag timeout into an actionable error that lists what the platform actually offers. */
+export function tagMissMessage(platform,tag,suggestions){
+ const visible=(Array.isArray(suggestions)?suggestions:[]).filter(x=>typeof x==='string'&&x.trim()).slice(0,8);
+ return visible.length
+  ?`${platform} has no existing tag ${JSON.stringify(tag)}; visible suggestions: ${visible.map(x=>JSON.stringify(x)).join(', ')}`
+  :`${platform} has no existing tag ${JSON.stringify(tag)} and no suggestion list was visible`;
+}
 export const NEW_ARTICLE='https://juejin.cn/editor/drafts/new?v=2';
 export const CATEGORIES=['后端','前端','Android','iOS','人工智能','开发工具','代码人生','阅读'];
 export function validateArticleManifest(v){
@@ -59,9 +99,9 @@ export async function articleSnapshot(resourceKey){
   panelOpen:popup?.active===true,finalControlPresent:final.length===1,finalControlDisabled:final.some(e=>e.disabled),status:root?.status,saveText:document.querySelector('.status-text')?.innerText,
   rendering:{headings:preview?.querySelectorAll('h1,h2,h3').length||0,tables:preview?.querySelectorAll('table').length||0,codeBlocks:preview?.querySelectorAll('pre').length||0},finalPublishClicked:false};
 }
-export function assertArticleChecks(s,m,a,binding){
+export function assertArticleChecks(s,m,a,binding,expectedBody=m.body){
  if(s.account?.id!==m.accountId)throw new CliError('ACCOUNT_MISMATCH','Logged-in account differs from expected public ID');
- if(!s.draftId||s.url!==`https://juejin.cn/editor/drafts/${s.draftId}`||s.title!==m.title||s.body!==m.body||s.bodySha256!==hash(m.body)||!s.modelMatches)throw new CliError('FIELD_MISMATCH','Draft identity, title or Markdown differs');
+ if(!s.draftId||s.url!==`https://juejin.cn/editor/drafts/${s.draftId}`||s.title!==m.title||s.body!==expectedBody||s.bodySha256!==hash(expectedBody)||!s.modelMatches)throw new CliError('FIELD_MISMATCH','Draft identity, title or Markdown differs');
  if(s.category!==m.category||s.categorySelected.length!==1||s.categorySelected[0]!==m.category||s.tags.length!==1||s.tags[0].title!==m.tags[0]||(typeof s.tags[0].id!=='string'||!/^\d+$/.test(s.tags[0].id))||s.summary!==m.summary||s.modelSummary!==m.summary)throw new CliError('SETTINGS_MISMATCH','Category, tag or summary differs');
  if(s.columns.length||s.topics.length||s.topicState.length||s.syncToOrg!==false)throw new CliError('SETTINGS_MISMATCH','Unexpected column, topic or organization synchronization');
  if(!s.cover.present||!s.cover.visible||!s.cover.loaded||!s.cover.matchesModel||s.cover.width!==a.cover.width||s.cover.height!==a.cover.height||s.cover.updating||s.cover.hash!==binding.hash||binding.sha256!==a.cover.sha256||binding.bytes!==a.cover.bytes)throw new CliError('COVER_MISMATCH','Cover upload or applied binding differs');
@@ -88,7 +128,10 @@ export async function prepareArticleEditor(page,m,a,stage,resumeDraftId=null,res
  await stage('filling_content');
  await fillVerified(page,'input.title-input',m.title);
  await page.evaluate(`document.querySelector('.CodeMirror').CodeMirror.setValue(${JSON.stringify(m.body)})`);
- await waitFor(page,`document.querySelector('.CodeMirror').CodeMirror.getValue()===${JSON.stringify(m.body)}`,'exact Markdown');
+ const storedMarkdown=await page.evaluate(`document.querySelector('.CodeMirror').CodeMirror.getValue()`);
+ const markdownComparison=compareMarkdown(m.body,storedMarkdown);
+ if(!markdownComparison.ok)throw new CliError('FIELD_MISMATCH',`Markdown changed after write at offset ${markdownComparison.offset}; editor stored ${markdownComparison.context}`);
+ if(markdownComparison.cosmetic)await stage('markdown_normalized',{bodyAsStored:storedMarkdown});
  if(!await page.evaluate(`document.querySelector('.publish-popup')?.__vue__?.active===true`))await page.click('.publish-popup > button.xitu-btn');
  await waitFor(page,`document.querySelector('.publish-popup')?.__vue__?.active===true`,'publish settings panel');
  await clickText(page,m.category,'.category-list');
@@ -98,7 +141,8 @@ export async function prepareArticleEditor(page,m,a,stage,resumeDraftId=null,res
  if(!currentTags.length){
  await page.click('[data-bycli-tags] input');
  await fillVerified(page,'[data-bycli-tags] input',m.tags[0]);
- await waitFor(page,`[...document.querySelectorAll('.byte-select-dropdown li')].some(e=>e.getBoundingClientRect().width>0&&e.innerText.trim()===${JSON.stringify(m.tags[0])})`,'exact matching tag',20000);
+ try{await waitFor(page,`[...document.querySelectorAll('.byte-select-dropdown li')].some(e=>e.getBoundingClientRect().width>0&&e.innerText.trim()===${JSON.stringify(m.tags[0])})`,'exact matching tag',20000);}
+ catch(error){if(error?.code!=='PREPARATION_TIMEOUT')throw error;const suggestions=await page.evaluate(`[...document.querySelectorAll('.byte-select-dropdown li')].filter(e=>e.getBoundingClientRect().width>0).map(e=>e.innerText.trim()).filter(Boolean).slice(0,8)`).catch(()=>[]);throw new CliError('TAG_NOT_FOUND',tagMissMessage('Juejin',m.tags[0],suggestions));}
  await clickText(page,m.tags[0],'.byte-select-dropdown');
  }
  await fillVerified(page,'.summary-textarea textarea',m.summary);
@@ -116,7 +160,7 @@ export async function prepareArticleEditor(page,m,a,stage,resumeDraftId=null,res
  let checks=await page.evaluate(snapshotScript());
  const selected=await page.evaluate('window.__bycliJuejinCover');
  const binding={...selected,hash:checks.cover.hash};
- assertArticleChecks(checks,m,a,binding);
+ assertArticleChecks(checks,m,a,binding,storedMarkdown);
  await stage('checking_persistence',{preCloseChecks:checks,upload:binding});
  // Closing and reopening the owned tab verifies server persistence, not same-page memory.
  const draftUrl=checks.url,t=await page.tabs();await page.closeTab(t[0].page);
@@ -126,8 +170,8 @@ export async function prepareArticleEditor(page,m,a,stage,resumeDraftId=null,res
  await waitFor(page,`document.querySelector('.publish-popup')?.__vue__?.active===true&&document.querySelector('.edit-draft')?.__vue__?.status==='editing'`,'reopened settings',30000);
  await waitFor(page,`document.querySelector('.coverselector_container .preview-image')?.complete&&document.querySelector('.coverselector_container .preview-image')?.naturalWidth>0`,'reopened cover preview',45000);
  checks=await page.evaluate(snapshotScript());
- assertArticleChecks(checks,m,a,binding);
- return {account:checks.account,draftId:checks.draftId,draftUrl,checks,upload:binding,persistence:'verified_after_close_and_reopen'};
+ assertArticleChecks(checks,m,a,binding,storedMarkdown);
+ return {bodyAsStored:storedMarkdown,account:checks.account,draftId:checks.draftId,draftUrl,checks,upload:binding,persistence:'verified_after_close_and_reopen'};
 }
 export async function prepareArticle(page,args){
  if(args.prepare!==true||!args.input)throw new ArgumentError('Use --prepare --input manifest.json; final submission is not implemented in this command');
@@ -155,8 +199,8 @@ export async function prepareArticle(page,args){
   await page.screenshot({path:preview,fullPage:false});await fs.chmod(preview,0o600);
   delete job.recoveryManifest;job.status='ready_for_confirmation';job.stage='ready';job.verifiedAt=new Date().toISOString();await save();
  }catch(error){
-  try{const s=await page.evaluate(snapshotScript());if(['filling_content','uploading_cover','checking_persistence'].includes(job.stage)&&(!args.resume||s.draftId===job.draftId)&&s.title===manifest.title&&s.body===manifest.body&&s.account.id===manifest.accountId&&s.draftId){job.draftId=s.draftId;job.draftUrl=s.url;job.recoveryManifest=manifest;}}catch{}
-  job.status='failed';job.failureHistory=[...(job.failureHistory||[]),{at:new Date().toISOString(),stage:job.stage,code:error?.code||'PREPARATION_FAILED'}];job.error={code:error?.code||'PREPARATION_FAILED',message:'Preparation did not pass; retain browser page for inspection'};await save();throw new CliError(job.error.code,`Article preparation stopped; inspect retained page and ${report}`)}
+  try{const s=await page.evaluate(snapshotScript());if(['filling_content','markdown_normalized','uploading_cover','checking_persistence'].includes(job.stage)&&(!args.resume||s.draftId===job.draftId)&&s.title===manifest.title&&typeof s.body==='string'&&compareMarkdown(manifest.body,s.body).ok&&s.account.id===manifest.accountId&&s.draftId){job.draftId=s.draftId;job.draftUrl=s.url;job.recoveryManifest={...manifest,body:s.body};}}catch{}
+  job.status='failed';job.failureHistory=[...(job.failureHistory||[]),{at:new Date().toISOString(),stage:job.stage,code:error?.code||'PREPARATION_FAILED'}];job.error={code:error?.code||'PREPARATION_FAILED',message:error instanceof CliError&&['EXISTING_EDITOR','TAG_NOT_FOUND','FIELD_MISMATCH'].includes(error.code)?error.message.replace(/https?:\/\/\S+/g,'[url]').slice(0,500):'Preparation did not pass; retain browser page for inspection'};await save();throw new CliError(job.error.code,`${job.error.message}; inspect retained page and ${report}`)}
  return [{status:job.status,job_id:jobId,title:manifest.title,account:job.account.name,draft_id:job.draftId,draft_url:job.draftUrl,submitted:false,report,preview}];
  }finally{await lock.close();await fs.rm(report+'.lock',{force:true})}
 }
