@@ -28718,6 +28718,70 @@
   },
   {
     "site": "toutiao",
+    "name": "save-draft",
+    "description": "保存今日头条文章草稿：填充后等待平台自动保存，重开核对；不会提交发布",
+    "access": "write",
+    "domain": "mp.toutiao.com",
+    "strategy": "ui",
+    "browser": true,
+    "args": [
+      {
+        "name": "title",
+        "type": "string",
+        "required": true,
+        "positional": true,
+        "help": "文章标题（2-30 字）"
+      },
+      {
+        "name": "content",
+        "type": "string",
+        "required": false,
+        "help": "文章正文"
+      },
+      {
+        "name": "content-file",
+        "type": "string",
+        "required": false,
+        "help": "正文文件路径"
+      },
+      {
+        "name": "cover",
+        "type": "string",
+        "required": false,
+        "help": "封面图片路径（可选）"
+      },
+      {
+        "name": "replace",
+        "type": "boolean",
+        "default": false,
+        "required": false,
+        "help": "编辑器已有草稿时先清空再填充"
+      },
+      {
+        "name": "require-cover",
+        "type": "boolean",
+        "default": false,
+        "required": false,
+        "help": "封面未成功应用时直接失败"
+      }
+    ],
+    "columns": [
+      "status",
+      "title",
+      "contentLength",
+      "restoredLength",
+      "cover",
+      "url",
+      "submitted",
+      "message"
+    ],
+    "type": "js",
+    "modulePath": "toutiao/save-draft.js",
+    "sourceFile": "toutiao/save-draft.js",
+    "navigateBefore": true
+  },
+  {
+    "site": "toutiao",
     "name": "search",
     "description": "搜索今日头条公开站内内容",
     "access": "read",
