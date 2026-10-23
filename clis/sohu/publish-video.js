@@ -1,7 +1,9 @@
+import {resumeCategory} from './_resume.js';
+import {selectSohuCategory} from './_category.js';
 import { cli, Strategy } from '@sovovs/bycli/registry';
-import { videoJobAction } from '../_shared/video-submit.js';
-import { makeVideoAdapter } from '../_shared/video-site-submit.js';
-import { CliError } from '@sovovs/bycli/errors';
+import { digest, videoJobAction } from '../_shared/video-submit.js';
+import { liveContext, makeVideoAdapter } from '../_shared/video-site-submit.js';
+import { ArgumentError, CliError } from '@sovovs/bycli/errors';
 import { prepareVideo, waitFor, clickText, fillVerified } from '../_shared/video-prepare.js';
 
 export const VIDEO_PUBLISH_URL = 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addvideo';
@@ -26,16 +28,7 @@ export function sohuPreparedSnapshot() {
 }
 
 export async function selectCategory(page, labels) {
-    for (let i = 0; i < 2; i++) {
-        const exists = await page.evaluate(`(() => {
-            const e = document.querySelectorAll('.channel-select-row .select')[${i}];
-            e?.setAttribute('data-bycli-category', '${i}'); return !!e;
-        })()`);
-        if (!exists) throw new CliError('CATEGORY_UNAVAILABLE', 'Channel category controls are unavailable');
-        const scope = `[data-bycli-category="${i}"]`;
-        await page.click(`${scope} .select-main`);
-        await clickText(page, labels[i], `${scope} .select-list`);
-    }
+    return selectSohuCategory(page, 'video', labels);
 }
 
 export async function prepareSohuVideo(page, manifest, stage) {
@@ -57,6 +50,10 @@ export async function prepareSohuVideo(page, manifest, stage) {
     await stage('filling_fields');
     await fillVerified(page, 'input.titleErrorInput', manifest.title);
     await fillVerified(page, 'textarea.abstract-main-textarea', manifest.body);
+    const context=await page.evaluate(`(${liveContext.toString()})('sohu')`);
+    if(!context.account?.id||!context.uploadIdentity)throw new CliError('ACCOUNT_UNVERIFIED','Cannot bind uploaded video before category selection');
+    await stage('selecting_category',{checks:await page.evaluate(`(${sohuPreparedSnapshot.toString()})()`),account:context.account,mediaHash:digest({upload:context.uploadIdentity,cover:context.cover,video:context.video})});
+    if(!manifest.category)throw new CliError('CATEGORY_REQUIRED','Video and cover uploaded; inspect the video category options and resume');
     await selectCategory(page, manifest.category);
     await clickText(page, manifest.declaration, 'label.el-radio');
     await stage('verifying_required_fields');
@@ -72,6 +69,8 @@ export const command = cli({
     description: '准备搜狐号视频：上传视频封面、填写必填项，确认后提交并查询回执与状态',
     domain: 'mp.sohu.com', strategy: Strategy.COOKIE, navigateBefore: false, siteSession: 'persistent',
     args: [
+        {name:'resume',valueRequired:true,help:'Resume a retained category-selection checkpoint'},
+        {name:'category',valueRequired:true,help:'JSON [primary, secondary] for --resume'},
         { name: 'input', help: 'Path to video preparation JSON manifest' },
         { name: 'review', help: 'Review local job UUID and issue a 30-minute confirmation token' },
         { name: 'submit', help: 'Submit reviewed job UUID exactly once, after human approval' },
@@ -80,8 +79,10 @@ export const command = cli({
         { name: 'timeout', type: 'int', default: 300, help: 'Overall preparation timeout in seconds' },
         { name: 'prepare', type: 'bool', default: false, help: 'Prepare only; requires --input' },
     ],
-    columns: ['status', 'job_id', 'submitted', 'account', 'content_id', 'confirmation', 'query_status', 'report', 'preview'],
+    columns: ['recovery', 'status', 'job_id', 'submitted', 'account', 'content_id', 'confirmation', 'query_status', 'report', 'preview'],
     func: (page, kwargs) => {
+        if(kwargs.resume)return resumeCategory(page,kwargs,'video',makeVideoAdapter('sohu',sohuPreparedSnapshot),sohuPreparedSnapshot);
+        if(kwargs.category)throw new ArgumentError('--category requires --resume');
         if (kwargs.prepare && !kwargs.review && !kwargs.submit && !kwargs.status && !kwargs.confirm && kwargs.input) return prepareVideo(page, kwargs, 'sohu', prepareSohuVideo, makeVideoAdapter('sohu', sohuPreparedSnapshot).inspect);
         return videoJobAction(page, kwargs, 'sohu', makeVideoAdapter('sohu', sohuPreparedSnapshot));
     },

@@ -1,3 +1,4 @@
+import {selectSohuCategory} from './_category.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -20,7 +21,7 @@ export function validateContentManifest(value,type){
  if(!Array.isArray(value.images)||value.images.length<(type==='gallery'?3:1)||value.images.length>(type==='gallery'?40:20))throw new ArgumentError('gallery supports 3–40 images; article supports 1–20 end-of-body images');
  if(type==='gallery'){
   if(value.images.some(x=>!x||typeof x!=='object'||Array.isArray(x)||Object.keys(x).some(k=>!['path','description'].includes(k))||typeof x.path!=='string'||!x.path.trim()||typeof x.description!=='string'||!x.description.trim()||x.description.length>200))throw new ArgumentError('Each gallery image needs path and 1–200 character description');
-  if(!Array.isArray(value.category)||value.category.length!==2||value.category.some(x=>typeof x!=='string'||!x.trim()))throw new ArgumentError('category requires [primary, secondary]');
+  if(value.category!==undefined&&(!Array.isArray(value.category)||value.category.length!==2||value.category.some(x=>typeof x!=='string'||!x.trim())))throw new ArgumentError('category requires [primary, secondary]');
  }else{
   if(typeof value.body!=='string'||!value.body.trim()||value.body.length>20000||/[\r]/.test(value.body))throw new ArgumentError('body requires 1–20000 character units of plain text using LF newlines');
   if(typeof value.summary!=='string'||!value.summary.trim()||value.summary.length>120||/[\r\n]/.test(value.summary))throw new ArgumentError('summary requires 1–120 character units on one line');
@@ -109,12 +110,7 @@ async function uploadDialog(page,files,assets){
  return filesRead;
 }
 async function selectGalleryCategory(page,labels){
- for(let i=0;i<2;i++){
-  await page.evaluate(`document.querySelectorAll('.select.plugin-dropdown')[${i}]?.setAttribute('data-bycli-category', '${i}')`);
-  const scope=`[data-bycli-category="${i}"]`;await page.click(scope+' .select-main');await clickText(page,labels[i],scope+' .select-list');
-  await waitFor(page,`document.querySelector('${scope} .select-text')?.innerText.trim()===${JSON.stringify(labels[i])}`,'selected category');
-  if(i===0)await page.wait({time:1});
- }
+ return selectSohuCategory(page,'gallery',labels);
 }
 export async function prepareContentEditor(page,manifest,assets,type,stage){
  const tabs=await page.tabs();
@@ -141,7 +137,6 @@ export async function prepareContentEditor(page,manifest,assets,type,stage){
    await page.evaluate(`document.querySelectorAll('textarea.text-desc')[${i}]?.setAttribute('data-bycli-description','${i}')`);
    await fillVerified(page,`[data-bycli-description="${i}"]`,item.description);
   }
-  await selectGalleryCategory(page,manifest.category);
  }
  const inserted=await page.evaluate(`(${contentSnapshot.toString()})(${JSON.stringify(type)})`);
  const upload={images:inserted.pictures.map(p=>p.uploadHash),sourceImages:selected.map(f=>({name:f.name,bytes:f.bytes,sha256:f.sha256,status:f.status}))};
@@ -153,6 +148,12 @@ export async function prepareContentEditor(page,manifest,assets,type,stage){
  await waitFor(page,`document.body.innerText.includes('已选择1张')`,'uploaded cover',120000);await clickText(page,'确定','.select-dialog');
  await waitFor(page,`!!document.querySelector('.pic-cover')?.style.backgroundImage&&!document.querySelector('.pic-cover')?.style.backgroundImage.includes('url("")')`,'applied cover');
  upload.coverSha256=coverFiles[0].sha256;
+ if(type==='gallery'){
+  const checkpoint=await page.evaluate(`(${contentSnapshot.toString()})('gallery')`);upload.coverBinding=checkpoint.cover.binding;
+  await stage('selecting_category',{checks:checkpoint,upload,account});
+  if(!manifest.category)throw new CliError('CATEGORY_REQUIRED','Images and cover are uploaded; inspect current categories and resume this job');
+  await selectGalleryCategory(page,manifest.category);
+ }
  await stage('filling_required_fields');await clickText(page,manifest.declaration,'label.el-radio');
  const checks=await page.evaluate(`(${contentSnapshot.toString()})(${JSON.stringify(type)})`);upload.coverBinding=checks.cover.binding;
  assertContentChecks(checks,manifest,assets,type,upload);
@@ -167,10 +168,10 @@ export async function prepareSohuContent(page,kwargs,type){
  const save=async()=>{job.updatedAt=new Date().toISOString();const temp=path.join(dir,randomUUID()+'.tmp');await fs.writeFile(temp,JSON.stringify(job,null,2),{mode:0o600});await fs.rename(temp,report)};
  await save();
  try{
-  job.checks=await prepareContentEditor(page,manifest,assets,type,async stage=>{job.stage=stage;await save()});
+  job.checks=await prepareContentEditor(page,manifest,assets,type,async(stage,checkpoint)=>{job.stage=stage;if(checkpoint)job.preparationCheckpoint=checkpoint;await save()});
   for(const a of [...assets.images,assets.cover])if(hash(await fs.readFile(a.path))!==a.sha256)throw new CliError('ASSET_CHANGED','Local image changed during preparation');
   job.preparedAccount=job.checks.account;job.pageTarget=page.getActivePage?.()??null;job.screenshot=path.join(dir,'preview.png');await page.screenshot({path:job.screenshot,fullPage:false});await fs.chmod(job.screenshot,0o600);
   job.status='ready_for_confirmation';job.stage='ready';await save();
   return [{status:job.status,job_id:jobId,content_type:type,title:manifest.title,submitted:false,account:job.preparedAccount.name,report,preview:job.screenshot}];
- }catch(error){job.status='failed';job.pageTarget=page.getActivePage?.()??null;job.error={code:error.code||'PREPARATION_FAILED',message:String(error.message||error).replace(/(?:https?:)?\/\/\S+/g,'[url]').slice(0,400)};await save();throw new CliError(job.error.code,job.error.message,`Local preparation report: ${report}`)}
+ }catch(error){job.status=error.code==='CATEGORY_REQUIRED'?'category_required':'failed';job.pageTarget=page.getActivePage?.()??null;job.error={code:error.code||'PREPARATION_FAILED',message:String(error.message||error).replace(/(?:https?:)?\/\/\S+/g,'[url]').slice(0,400)};await save();if(error.code==='CATEGORY_REQUIRED')return [{status:job.status,job_id:jobId,content_type:type,submitted:false,report,recovery:'Inspect bycli sohu editor --categories, then --resume JOB --category JSON'}];throw new CliError(job.error.code,job.error.message,`Local preparation report: ${report}`)}
 }

@@ -21,7 +21,7 @@ export function validateManifest(value, platform) {
     if (/[\r\n]/.test(value.title)) throw new ArgumentError('Title must be a single line');
     if (value.visibility !== 'public') throw new ArgumentError('This preparation command currently requires visibility="public"');
     if (!(platform === 'sohu' ? SOHU_DECLARATIONS : XHS_DECLARATIONS).includes(value.declaration)) throw new ArgumentError('Unsupported content declaration');
-    if (platform === 'sohu' && (!Array.isArray(value.category) || value.category.length !== 2 || value.category.some(x => typeof x !== 'string' || !x.trim()))) throw new ArgumentError('Sohu requires category: [primary, secondary]');
+    if (platform === 'sohu' && value.category !== undefined && (!Array.isArray(value.category) || value.category.length !== 2 || value.category.some(x => typeof x !== 'string' || !x.trim()))) throw new ArgumentError('Sohu requires category: [primary, secondary]');
     if (platform === 'xiaohongshu' && value.coverRatio !== undefined && !['原始', '1:1', '3:4', '4:3'].includes(value.coverRatio)) throw new ArgumentError('Unsupported coverRatio');
     return { ...value };
 }
@@ -137,7 +137,7 @@ export async function prepareVideo(page, kwargs, platform, prepare, inspect) {
         await fs.rename(temp, report);
     };
     await save();
-    const stage = async name => { job.stage = name; await save(); };
+    const stage = async (name, checkpoint) => { job.stage = name; if(checkpoint)job.preparationCheckpoint=checkpoint; await save(); };
     try {
         job.checks = await prepare(page, manifest, stage);
         // Detect changed local inputs before claiming the prepared result matches the manifest.
@@ -162,10 +162,11 @@ export async function prepareVideo(page, kwargs, platform, prepare, inspect) {
         await save();
         return [{ status: job.status, job_id: jobId, submitted: false, title: manifest.title, report, preview: job.screenshot }];
     } catch (error) {
-        job.status = 'failed';
+        job.status = error.code === 'CATEGORY_REQUIRED' ? 'category_required' : 'failed';
         job.pageTarget = page.getActivePage?.() ?? null;
         job.error = { code: error.code || 'PREPARATION_FAILED', message: String(error.message || 'Preparation failed').replace(/https?:\/\/\S+/g, '[url]').slice(0, 400) };
         await save();
+        if(error.code==='CATEGORY_REQUIRED')return [{status:job.status,job_id:jobId,submitted:false,report,recovery:'Inspect bycli sohu editor --categories, then --resume JOB --category JSON'}];
         throw new CliError(job.error.code, job.error.message, `Local preparation report: ${report}`);
     }
 }
