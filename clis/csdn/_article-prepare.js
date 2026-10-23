@@ -1,6 +1,18 @@
 import fs from'node:fs/promises';import path from'node:path';import os from'node:os';import{createHash,randomUUID}from'node:crypto';
 import{ArgumentError,CliError}from'@sovovs/bycli/errors';import{imageDimensions}from'../_shared/image-prepare.js';import{waitFor,fillVerified}from'../_shared/video-prepare.js';import{saveJob}from'../_shared/video-submit.js';
 const sha=x=>createHash('sha256').update(x).digest('hex');export const EDITOR='https://editor.csdn.net/md/';
+export function retainedEditorError(tab){
+ const target=tab&&tab.page?String(tab.page):'unknown';
+ const where=tab&&tab.url?` at ${tab.url}`:'';
+ return new CliError('EXISTING_EDITOR',`Retain current owned page${where}; finish or close it before preparing another article. In the byCLI Adapter browser window, manually finish or close the CSDN editor tab (target ${target}). Ordinary browser sessions cannot close this Adapter tab`);
+}
+export function tagMissMessage(platform,tag,suggestions){
+ const visible=(Array.isArray(suggestions)?suggestions:[]).filter(x=>typeof x==='string'&&x.trim()).slice(0,8);
+ return visible.length
+  ?`${platform} has no existing tag ${JSON.stringify(tag)}; visible suggestions: ${visible.map(x=>JSON.stringify(x)).join(', ')}`
+  :`${platform} has no existing tag ${JSON.stringify(tag)} and no suggestion list was visible`;
+}
+
 export function validateCsdnManifest(v){
  if(!v||typeof v!=='object'||Array.isArray(v))throw new ArgumentError('Expected CSDN article JSON');
  const keys=['title','body','cover','summary','tags','articleType','visibility','declaration','accountId','columns','backupToGitCode','multiPlatform','template','activities','topics'];for(const k of Object.keys(v))if(!keys.includes(k))throw new ArgumentError(`Unsupported field: ${k}`);
@@ -72,7 +84,7 @@ export async function dismissCsdnTemplate(page){
 }
 async function openSettings(page){await dismissCsdnTemplate(page);await csdnClick(page,'button.btn-publish');await waitFor(page,`!!document.querySelector('.modal__publish-article .creation-statement-row')`,'CSDN publishing settings',45000);}
 export async function prepareCsdnEditor(page,m,a,markdownFile,stage,resumeId,resumeTitle=m.title,existingUpload=null){
- const tabs=await page.tabs();if(tabs.length){page.setActivePage(tabs[0].page);if(!resumeId)throw new CliError('EXISTING_EDITOR','Retain current owned page; finish or close it before preparing another article');}
+ const tabs=await page.tabs();if(tabs.length){page.setActivePage(tabs[0].page);if(!resumeId)throw retainedEditorError(tabs[0]);}
  else{if(resumeId)throw new CliError('EDITOR_MISSING','Retained failed preparation editor is required');await page.goto(EDITOR,{stealth:false})}
  await page.focusWindow();await waitFor(page,`!!document.querySelector('.app')?.__vue__?.$store?.state.userInfo.name&&!!document.querySelector('#import-markdown-file-input')`,'authenticated Markdown editor',45000);
  let state=await page.evaluate(csdnSnapshotScript());if(state.account.id!==m.accountId)throw new CliError('ACCOUNT_MISMATCH','Logged-in CSDN account differs');
@@ -92,7 +104,10 @@ export async function prepareCsdnEditor(page,m,a,markdownFile,stage,resumeId,res
  let tags=await page.evaluate(`(()=>{let v=document.querySelector('.creation-statement-row .el-select').__vue__;while(v&&!Object.hasOwn(v.$data,'tags'))v=v.$parent;return document.querySelector('.app').__vue__.$store.getters['file/current'].tags})()`);if(typeof tags==='string')tags=tags.split(',').filter(Boolean);if(!Array.isArray(tags))throw new CliError('SETTINGS_MISMATCH','Unexpected existing tags');
  for(const tag of m.tags.filter(t=>!tags.includes(t))){
   const search='input[placeholder="请输入文字搜索，Enter键入可添加自定义标签"]';if(!await page.evaluate(`!!document.querySelector(${JSON.stringify(search)})&&document.querySelector(${JSON.stringify(search)}).getBoundingClientRect().width>0`))await csdnClick(page,'.mark_selection[typename="tags"] .tag__btn-tag');
-  await fillVerified(page,search,tag);await waitFor(page,`[...document.querySelectorAll('.el-autocomplete-suggestion__list li')].some(e=>e.getBoundingClientRect().width>0&&e.innerText.trim()===${JSON.stringify(tag)})`,'exact existing tag '+tag,20000);await csdnText(page,tag,'.el-autocomplete-suggestion__list');
+  await fillVerified(page,search,tag);
+  try{await waitFor(page,`[...document.querySelectorAll('.el-autocomplete-suggestion__list li')].some(e=>e.getBoundingClientRect().width>0&&e.innerText.trim()===${JSON.stringify(tag)})`,'exact existing tag '+tag,20000);}
+  catch(error){if(error?.code!=='PREPARATION_TIMEOUT')throw error;const suggestions=await page.evaluate(`[...document.querySelectorAll('.el-autocomplete-suggestion__list li')].filter(e=>e.getBoundingClientRect().width>0).map(e=>e.innerText.trim()).filter(Boolean).slice(0,8)`).catch(()=>[]);throw new CliError('TAG_NOT_FOUND',tagMissMessage('CSDN',tag,suggestions));}
+  await csdnText(page,tag,'.el-autocomplete-suggestion__list');
  }
  const selectedTags=await page.evaluate(`document.querySelector('.app').__vue__.$store.getters['file/current'].tags`);
  for(const extra of (Array.isArray(selectedTags)?selectedTags:selectedTags.split(',').filter(Boolean)).filter(t=>!m.tags.includes(t))){await page.evaluate(`(()=>{const e=[...document.querySelectorAll('.mark_selection_title_el_tag .mark_selection_box_el_tag')].find(e=>e.innerText.trim()===${JSON.stringify(extra)});if(!e)throw Error('Unexpected tag control');e.querySelector('.el-tag__close').click()})()`);}

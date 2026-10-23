@@ -1,4 +1,4 @@
-import{describe,it,expect,vi}from'vitest';import{createHash}from'node:crypto';import{validateCsdnManifest,assertCsdnChecks,fillCsdnTitle,csdnClick,csdnText,readCsdnManifest,prepareCsdnEditor,prepareCsdnArticle}from'./_article-prepare.js';
+import{describe,it,expect,vi}from'vitest';import{createHash}from'node:crypto';import{validateCsdnManifest,assertCsdnChecks,fillCsdnTitle,csdnClick,csdnText,readCsdnManifest,prepareCsdnEditor,prepareCsdnArticle,retainedEditorError,tagMissMessage}from'./_article-prepare.js';
 const hash=s=>createHash('sha256').update(s).digest('hex');
 const manifest=()=>({title:'JavaScript重试边界实验',body:'## 实验\n\n```js\nconsole.log(1);\n```',summary:'验证结果未知时的重复写入与去重边界。',cover:'cover.png',tags:['javascript','前端'],articleType:'original',visibility:'public',declaration:'部分内容由AI辅助生成',accountId:'weixin_123',columns:[],backupToGitCode:false,multiPlatform:false,template:'默认模板',activities:[],topics:[]});
 function fixture(){const m=manifest(),a={cover:{sha256:'source',bytes:12}},b={sourceSha256:'source',sourceBytes:12,remoteHash:'remote',crop:{width:356,height:200,sha256:'a'.repeat(64)}},s={url:'https://editor.csdn.net/md/',account:{id:m.accountId},title:m.title,modelTitle:m.title,body:m.body,bodySha256:hash(m.body),modalTypes:['publishArticle'],panelOpen:true,tags:m.tags,tagLabels:m.tags,summary:m.summary,modelSummary:m.summary,articleType:'original',visibility:'public',declaration:1,declarationLabel:m.declaration,quota:2,cover:{width:356,height:200,present:true,loaded:true,uploading:false,cropOpen:false,hashes:['remote'],displayedHash:'remote'},finalControlPresent:true,finalControlDisabled:false,checkedRadios:['original','public'],backupToGitCode:false,multiPlatform:false,selectedPlatforms:[],columns:[],activityId:'',topicId:'',scheduledTime:'',templateId:-1};return{m,a,b,s}}
@@ -41,4 +41,23 @@ describe('CSDN files and preparation job protection',()=>{
  it('preserves a ready report and releases the lock after refusing resume',()=>local(async({dir,input})=>{vi.stubEnv('BYCLI_CONFIG_DIR',dir);const id='11111111-1111-4111-8111-111111111111',d=path.join(dir,'publish-jobs','csdn',id);await fs.mkdir(d,{recursive:true});const file=path.join(d,'job.json'),old=JSON.stringify({jobId:id,platform:'csdn',contentType:'article',status:'ready_for_confirmation'});await fs.writeFile(file,old);const p={tabs:vi.fn()};await expect(prepareCsdnArticle(p,{prepare:true,input,resume:id})).rejects.toMatchObject({code:'RESUME_MISMATCH'});expect(await fs.readFile(file,'utf8')).toBe(old);expect(p.tabs).not.toHaveBeenCalled();await expect(fs.stat(file+'.lock')).rejects.toMatchObject({code:'ENOENT'});}));
  it('does not take an existing job lock',()=>local(async({dir,input})=>{vi.stubEnv('BYCLI_CONFIG_DIR',dir);const id='11111111-1111-4111-8111-111111111111',d=path.join(dir,'publish-jobs','csdn',id);await fs.mkdir(d,{recursive:true});const file=path.join(d,'job.json.lock');await fs.writeFile(file,'owner');await expect(prepareCsdnArticle({}, {prepare:true,input,resume:id})).rejects.toMatchObject({code:'JOB_BUSY'});expect(await fs.readFile(file,'utf8')).toBe('owner');}));
  it('rejects submission mixed into prepare before file or browser access',async()=>expect(prepareCsdnArticle({}, {prepare:true,input:'missing',submit:'id'})).rejects.toThrow('no final submit mode'));
+});
+
+describe('CSDN retained-editor recovery guidance',()=>{
+ it('names the exact tab target so the operator can close it',()=>{const err=retainedEditorError({page:'ABC123',url:'https://editor.csdn.net/md/'});expect(err.code).toBe('EXISTING_EDITOR');expect(err.message).toContain('target ABC123');expect(err.message).toContain('manually');expect(err.message).not.toContain('bycli browser <session>');expect(err.message).toContain('https://editor.csdn.net/md/');});
+ it('still refuses to prepare a new article while a retained page exists',async()=>{const p={tabs:async()=>[{page:'ABC123'}],setActivePage:vi.fn(),goto:vi.fn(),setFileInput:vi.fn()};await expect(prepareCsdnEditor(p,manifest(),{},'file',vi.fn())).rejects.toMatchObject({code:'EXISTING_EDITOR'});expect(p.goto).not.toHaveBeenCalled();});
+ it('lists platform suggestions when a tag does not exist',()=>{const msg=tagMissMessage('CSDN','AI Agent',['人工智能','云计算']);expect(msg).toContain('AI Agent');expect(msg).toContain('云计算');});
+});
+
+
+describe('CSDN command-level recovery guidance',()=>{
+ it('retains the target and manual close instruction through the job error wrapper',()=>local(async({dir,input})=>{
+  vi.stubEnv('BYCLI_CONFIG_DIR',dir);
+  const page={tabs:async()=>[{page:'ABC123',url:'https://editor.csdn.net/md/'}],setActivePage:vi.fn(),goto:vi.fn(),evaluate:async()=>{throw Error('not available');}};
+  await expect(prepareCsdnArticle(page,{prepare:true,input})).rejects.toThrow('target ABC123');
+  const root=path.join(dir,'publish-jobs','csdn'),[id]=await fs.readdir(root);
+  const job=JSON.parse(await fs.readFile(path.join(root,id,'job.json'),'utf8'));
+  expect(job.error.message).toContain('manually');expect(job.error.message).not.toContain('bycli browser <session>');
+  expect(page.goto).not.toHaveBeenCalled();
+ }));
 });
