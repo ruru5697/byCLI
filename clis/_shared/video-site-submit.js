@@ -1,3 +1,4 @@
+import {editorInUse} from '../sohu/_editor.js';
 import { startReadCapture, waitReadCapture } from './read-response-capture.js';
 import { CliError } from '@sovovs/bycli/errors';
 import { digest, managers, sohuStatuses } from './video-submit.js';
@@ -98,7 +99,8 @@ export function parseManagerList(platform,entry,{accountId,tab}){
 /** A persistent adapter lease owns one preferred tab. Never replace a live editor with a query tab. */
 export async function openManagerPage(page, platform, originalPage) {
     const tabs = await page.tabs();
-    if(platform==='sohu'&&tabs.some(t=>{try{const u=new URL(t.url);return u.origin==='https://mp.sohu.com'&&/^\/mpfe\/v4\/contentManagement\/news\/add(?:article|atlas|video)$/.test(u.pathname)}catch{return false}}))throw new CliError('EDITOR_IN_USE','Retain the existing Sohu article, gallery or video editor before querying');
+    const retained=platform==='sohu'&&tabs.find(t=>{try{const u=new URL(t.url);return u.origin==='https://mp.sohu.com'&&/^\/mpfe\/v4\/contentManagement\/news\/add(?:article|atlas|video)$/.test(u.pathname)}catch{return false}});
+    if(retained)throw editorInUse(retained);
     const manager = tabs.find(t => { try { const u=new URL(t.url); return u.origin+u.pathname===managers[platform]; } catch { return false; } });
     const analytics = tabs.find(t => { try { const u=new URL(t.url); return u.origin===new URL(managers[platform]).origin && (platform==='xiaohongshu' ? /^\/statistics(?:\/|$)/.test(u.pathname) : u.pathname==='/mpfe/v4/data/analysis'); } catch { return false; } });
     const target = manager || tabs.find(t => t.page === originalPage) || analytics || tabs.find(t=>t.url==='about:blank');
