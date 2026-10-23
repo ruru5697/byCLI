@@ -23,7 +23,7 @@ cli({
         'rank', 'title', 'url', 'source', 'publish_time', 'summary', 'image_url',
         'like_count', 'comment_count', 'share_count', 'read_count',
     ],
-    func: async (_page, kwargs) => {
+    func: async (kwargs) => {
         const query = String(kwargs?.query ?? '').trim();
         if (!query) throw new CommandExecutionError('toutiao search requires a non-empty query');
         const type = parseSearchType(kwargs?.type, 'synthesis');

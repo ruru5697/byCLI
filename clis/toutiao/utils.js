@@ -259,7 +259,8 @@ function searchRowFromCard(item, index) {
         image_url: searchImage(item),
         like_count: parseSearchNumber(item.like_count ?? item.digg_count),
         comment_count: parseSearchNumber(item.comment_count),
-        share_count: parseSearchNumber(item.share_count ?? item.repin_count ?? item.forward_count),
+        // Preserve the metric identity: other counters are not verified shares.
+        share_count: parseSearchNumber(item.share_count),
         read_count: parseSearchNumber(item.read_count),
     };
 }

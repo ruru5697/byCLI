@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getRegistry } from '@sovovs/bycli/registry';
+import { executeCommand } from '../../src/execution.ts';
 import { ArgumentError, AuthRequiredError, CommandExecutionError, EmptyResultError } from '@sovovs/bycli/errors';
 
 import {
@@ -119,9 +120,15 @@ describe('toutiao search helpers', () => {
             image_url: 'https://img.example/a.jpg',
             like_count: 12,
             comment_count: 3,
-            share_count: 4,
+            share_count: null,
             read_count: 99,
         }]);
+    });
+
+    it.each([undefined, 0, 5])('does not substitute another counter for missing shares: %s', share_count => {
+        const item = {title:'计数口径', article_url:'https://www.toutiao.com/article/123', repin_count:4, forward_count:7, share_count};
+        const html = '<script type="application/json">' + JSON.stringify({data:item}) + '</script>';
+        expect(parseToutiaoSearchHtml(html,10)[0].share_count).toBe(share_count ?? null);
     });
 
     it('keeps missing optional fields as null and resolves relative URLs', () => {
@@ -399,9 +406,9 @@ describe('toutiao hot adapter (registry func)', () => {
         const fetchMock = vi.fn();
         vi.stubGlobal('fetch', fetchMock);
 
-        await expect(cmd.func(null, { limit: 0 })).rejects.toThrow(ArgumentError);
-        await expect(cmd.func(null, { limit: 51 })).rejects.toThrow(ArgumentError);
-        await expect(cmd.func(null, { limit: 'abc' })).rejects.toThrow(ArgumentError);
+        await expect(cmd.func({ limit: 0 })).rejects.toThrow(ArgumentError);
+        await expect(cmd.func({ limit: 51 })).rejects.toThrow(ArgumentError);
+        await expect(cmd.func({ limit: 'abc' })).rejects.toThrow(ArgumentError);
         expect(fetchMock).not.toHaveBeenCalled();
     });
 
@@ -416,7 +423,7 @@ describe('toutiao hot adapter (registry func)', () => {
         ));
         vi.stubGlobal('fetch', fetchMock);
 
-        const rows = await cmd.func(null, {});
+        const rows = await cmd.func({});
         expect(fetchMock).toHaveBeenCalledTimes(1);
         expect(fetchMock.mock.calls[0][0]).toBe(HOT_BOARD_URL);
         expect(rows).toHaveLength(2);
@@ -429,7 +436,7 @@ describe('toutiao hot adapter (registry func)', () => {
             new Response('', { status: 503 }),
         )));
 
-        await expect(cmd.func(null, { limit: 5 })).rejects.toThrow(CommandExecutionError);
+        await expect(cmd.func({ limit: 5 })).rejects.toThrow(CommandExecutionError);
     });
 
     it('throws CommandExecutionError on malformed JSON', async () => {
@@ -437,7 +444,7 @@ describe('toutiao hot adapter (registry func)', () => {
             new Response('not-json{{{', { status: 200 }),
         )));
 
-        await expect(cmd.func(null, { limit: 5 })).rejects.toThrow(CommandExecutionError);
+        await expect(cmd.func({ limit: 5 })).rejects.toThrow(CommandExecutionError);
     });
 
     it('throws CommandExecutionError on in-band error envelope', async () => {
@@ -445,13 +452,13 @@ describe('toutiao hot adapter (registry func)', () => {
             new Response(JSON.stringify({ status: 'error', message: 'rate limited' }), { status: 200 }),
         )));
 
-        await expect(cmd.func(null, { limit: 5 })).rejects.toThrow(CommandExecutionError);
+        await expect(cmd.func({ limit: 5 })).rejects.toThrow(CommandExecutionError);
     });
 
     it('throws CommandExecutionError when fetch rejects (no silent catch)', async () => {
         vi.stubGlobal('fetch', vi.fn().mockImplementation(() => Promise.reject(new Error('network down'))));
 
-        await expect(cmd.func(null, { limit: 5 })).rejects.toThrow(CommandExecutionError);
+        await expect(cmd.func({ limit: 5 })).rejects.toThrow(CommandExecutionError);
     });
 
     it('throws EmptyResultError when upstream payload is empty', async () => {
@@ -459,7 +466,7 @@ describe('toutiao hot adapter (registry func)', () => {
             new Response(JSON.stringify({ data: [] }), { status: 200 }),
         )));
 
-        await expect(cmd.func(null, { limit: 5 })).rejects.toThrow(EmptyResultError);
+        await expect(cmd.func({ limit: 5 })).rejects.toThrow(EmptyResultError);
     });
 
     it('caps result rows at limit and dense-ranks (1..N) after filtering', async () => {
@@ -474,7 +481,7 @@ describe('toutiao hot adapter (registry func)', () => {
             }), { status: 200 }),
         )));
 
-        const rows = await cmd.func(null, { limit: 2 });
+        const rows = await executeCommand(cmd, { limit: 2 });
         expect(rows.map(r => r.title)).toEqual(['kept', 'also kept']);
         expect(rows.map(r => r.rank)).toEqual([1, 2]); // dense rank after empty-title drop
     });
@@ -487,8 +494,8 @@ describe('toutiao search adapter (registry func)', () => {
         const fetchMock = vi.fn();
         vi.stubGlobal('fetch', fetchMock);
 
-        await expect(cmd.func(null, { query: 'AI', limit: 0 })).rejects.toThrow(ArgumentError);
-        await expect(cmd.func(null, { query: 'AI', limit: 51 })).rejects.toThrow(ArgumentError);
+        await expect(cmd.func({ query: 'AI', limit: 0 })).rejects.toThrow(ArgumentError);
+        await expect(cmd.func({ query: 'AI', limit: 51 })).rejects.toThrow(ArgumentError);
         expect(fetchMock).not.toHaveBeenCalled();
     });
 
@@ -502,7 +509,7 @@ describe('toutiao search adapter (registry func)', () => {
         const fetchMock = vi.fn().mockResolvedValue(new Response(html, { status: 200 }));
         vi.stubGlobal('fetch', fetchMock);
 
-        const rows = await cmd.func(null, { query: '人工 智能', type: 'video', limit: 5 });
+        const rows = await executeCommand(cmd, { query: '人工 智能', type: 'video', limit: 5 });
         const requested = new URL(fetchMock.mock.calls[0][0]);
         expect(requested.origin + requested.pathname).toBe(TOUTIAO_SEARCH_URL);
         expect(requested.searchParams.get('keyword')).toBe('人工 智能');
@@ -512,13 +519,13 @@ describe('toutiao search adapter (registry func)', () => {
 
     it('wraps HTTP, parse, network, and empty-result failures', async () => {
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', { status: 503 })));
-        await expect(cmd.func(null, { query: 'AI', limit: 5 })).rejects.toThrow(CommandExecutionError);
+        await expect(cmd.func({ query: 'AI', limit: 5 })).rejects.toThrow(CommandExecutionError);
 
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('not-json-card', { status: 200 })));
-        await expect(cmd.func(null, { query: 'AI', limit: 5 })).rejects.toThrow(EmptyResultError);
+        await expect(cmd.func({ query: 'AI', limit: 5 })).rejects.toThrow(EmptyResultError);
 
         vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')));
-        await expect(cmd.func(null, { query: 'AI', limit: 5 })).rejects.toThrow(CommandExecutionError);
+        await expect(cmd.func({ query: 'AI', limit: 5 })).rejects.toThrow(CommandExecutionError);
     });
 });
 
