@@ -331,3 +331,66 @@ describe('daemon command dispatch', () => {
     });
   });
 });
+
+describe('profile-scoped extension recovery', () => {
+  it('refuses busy or unspecified profiles and refreshes only the requested idle connection', async () => {
+    const probe = createServer();
+    probe.listen(0, '127.0.0.1');
+    await once(probe, 'listening');
+    const address = probe.address();
+    if (!address || typeof address === 'string') throw Error('port unavailable');
+    const port = address.port;
+    await new Promise<void>(resolve => probe.close(() => resolve()));
+    const daemon = spawn(process.execPath, ['--import', 'tsx', 'src/daemon.ts'], {
+      cwd: process.cwd(),
+      env: { ...process.env, BYCLI_DAEMON_HOST: '127.0.0.1', BYCLI_DAEMON_PORT: String(port) },
+      stdio: 'ignore',
+    });
+    const sockets: WebSocket[] = [];
+    const headers = { 'X-byCLI': '1', 'Content-Type': 'application/json' };
+    const url = `http://127.0.0.1:${port}`;
+    const status = async (contextId: string) => fetch(`${url}/status?contextId=${contextId}`, { headers }).then(r => r.json());
+    const reconnect = async (body: unknown) => fetch(`${url}/extension/reconnect`, { method: 'POST', headers, body: JSON.stringify(body) });
+    const connect = async (contextId: string, capabilities: string[]) => {
+      const socket = new WebSocket(`ws://127.0.0.1:${port}/ext`);
+      sockets.push(socket);
+      await once(socket, 'open');
+      socket.send(JSON.stringify({ type: 'hello', contextId, version: '2.1.28', capabilities }));
+      await expect.poll(async () => (await status(contextId)).extensionConnected).toBe(true);
+      return socket;
+    };
+    try {
+      await expect.poll(async () => (await fetch(`${url}/ping`)).status, { timeout: 10_000 }).toBe(200);
+      const a = await connect('profile-a', []);
+      const b = await connect('profile-b', ['file-input-shadow-v1']);
+      expect((await reconnect({})).status).toBe(400);
+      expect((await reconnect({ contextId: 'missing' })).status).toBe(503);
+      expect(a.readyState).toBe(WebSocket.OPEN);
+      expect(b.readyState).toBe(WebSocket.OPEN);
+
+      const received = once(a, 'message');
+      const command = fetch(`${url}/command`, { method: 'POST', headers, body: JSON.stringify({ id: 'in-flight', contextId: 'profile-a', action: 'exec', code: '1', session: 'work', surface: 'browser' }) });
+      await received;
+      const busy = await reconnect({ contextId: 'profile-a' });
+      expect(busy.status).toBe(409);
+      await expect(busy.json()).resolves.toMatchObject({ errorCode: 'profile_busy' });
+      expect(a.readyState).toBe(WebSocket.OPEN);
+      a.send(JSON.stringify({ id: 'in-flight', ok: true, data: 1 }));
+      expect((await command).status).toBe(200);
+
+      const closed = once(a, 'close');
+      const response = await reconnect({ contextId: 'profile-a' });
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({ ok: true, data: { contextId: 'profile-a', closed: 1 } });
+      await closed;
+      expect(b.readyState).toBe(WebSocket.OPEN);
+      await connect('profile-a', ['file-input-shadow-v1']);
+      await expect.poll(async () => (await status('profile-a')).extensionCapabilities).toContain('file-input-shadow-v1');
+      expect((await status('profile-b')).extensionConnected).toBe(true);
+    } finally {
+      for (const socket of sockets) socket.terminate();
+      daemon.kill('SIGTERM');
+      await once(daemon, 'exit');
+    }
+  }, 20_000);
+});

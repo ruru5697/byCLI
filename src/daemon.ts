@@ -417,6 +417,31 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
+  if (req.method === 'POST' && pathname === '/extension/reconnect') {
+    try {
+      const body = JSON.parse(await readBody(req));
+      if (typeof body?.contextId !== 'string' || !body.contextId.trim()) {
+        jsonResponse(res, 400, { ok: false, errorCode: 'profile_required', error: 'contextId required' });
+        return;
+      }
+      const route = resolveExtensionConnection(body.contextId);
+      if (!route.connection) {
+        jsonResponse(res, 503, { ok: false, ...route });
+        return;
+      }
+      const profile = route.connection;
+      if ([...pending.values()].some(command => command.contextId === profile.contextId)) {
+        jsonResponse(res, 409, { ok: false, errorCode: 'profile_busy', error: 'Profile has commands in flight; retry after they finish' });
+        return;
+      }
+      profile.ws.close(4001, 'capability-refresh');
+      jsonResponse(res, 200, { ok: true, data: { contextId: profile.contextId, closed: 1 } });
+    } catch (error) {
+      jsonResponse(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
   if (req.method === 'POST' && pathname === '/v1/browser/recover') {
     if (!BROWSER_RECOVERY_COMMAND) {
       jsonResponse(res, 503, {
