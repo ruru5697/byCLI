@@ -591,3 +591,20 @@ describe('commanderAdapter error envelope output', () => {
     stderrSpy.mockRestore();
   });
 });
+
+describe('Toutiao draft CLI arguments', () => {
+  it('enforces require-cover after parsing the registered command options', async () => {
+    mockExecuteCommand.mockReset(); mockExecuteCommand.mockResolvedValue([]);
+    mockRenderOutput.mockReset(); process.exitCode = undefined;
+    const adapterPath = '../clis/toutiao/save-draft.js';
+    const { saveDraftCommand } = await import(adapterPath);
+    const program = new Command();
+    registerCommandToProgram(program.command('toutiao'), saveDraftCommand);
+    await program.parseAsync(['node', 'bycli', 'toutiao', 'save-draft', '测试草稿', '--content', '正文内容', '--require-cover', 'true']);
+    const kwargs = mockExecuteCommand.mock.calls[0][1];
+    expect(kwargs).toMatchObject({ 'require-cover': true, title: '测试草稿', content: '正文内容' });
+    const page = { goto: vi.fn() };
+    await expect(saveDraftCommand.func(page, kwargs)).rejects.toThrow('--require-cover needs --cover');
+    expect(page.goto).not.toHaveBeenCalled();
+  });
+});
