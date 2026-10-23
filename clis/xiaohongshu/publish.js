@@ -18,6 +18,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { cli, Strategy } from '@sovovs/bycli/registry';
+import { CliError } from '@sovovs/bycli/errors';
 const PUBLISH_URL = 'https://creator.xiaohongshu.com/publish/publish?from=menu_left&target=image';
 const MAX_IMAGES = 9;
 const MAX_TITLE_LEN = 20;
@@ -37,12 +38,14 @@ const TITLE_SELECTORS = [
     '[contenteditable="true"][placeholder*="标题"]',
     '[contenteditable="true"][placeholder*="赞"]',
     '[contenteditable="true"][class*="title"]',
-    'input[maxlength="20"]',
-    'input[class*="title"]',
+    // The live form also has unrelated `d-text --color-text-title` inputs.
+    // Prefer the field's purpose over a shared text-colour class.
     'input[placeholder*="标题"]',
     'input[placeholder*="title" i]',
     '.title-input input',
     '.note-title input',
+    'input[maxlength="20"]',
+    'input[class*="title"]',
     'input[maxlength]',
 ];
 const SUPPORTED_EXTENSIONS = {
@@ -674,9 +677,20 @@ cli({
         }
         // ── Step 8: Verify success ─────────────────────────────────────────────────
         await page.wait({ time: 4 });
+        // An upload acknowledgement is not a draft-save receipt. The creator
+        // can reject browser-local drafts after all images have uploaded.
+        if (isDraft) {
+            const failure = await page.evaluate(`(() => {
+              const failures = ['草稿保存失败', '暂存失败', '保存草稿失败'];
+              return [...document.querySelectorAll('*')].filter(e => !e.children.length)
+                .map(e => (e.innerText || '').trim()).find(t => failures.some(f => t.includes(f))) || '';
+            })()`);
+            if (failure) throw new CliError('DRAFT_SAVE_FAILED', failure,
+                'Draft was not verified. Retain the source files and inspect the creator draft box; image drafts may exceed browser storage capacity. Do not publish as a fallback.');
+        }
         const finalUrl = await page.evaluate('() => location.href');
         const successMarkers = isDraft
-            ? ['草稿已保存', '暂存成功', '保存成功', '上传成功']
+            ? ['草稿已保存', '暂存成功', '保存成功']
             : ['发布成功', '上传成功'];
         const successMsg = await page.evaluate(`
       (markers => {
@@ -688,7 +702,7 @@ cli({
       })(${JSON.stringify(successMarkers)})
     `);
         const navigatedAway = !finalUrl.includes('/publish/publish');
-        const isSuccess = successMsg.length > 0 || navigatedAway;
+        const isSuccess = successMsg.length > 0 || (!isDraft && navigatedAway);
         const verb = isDraft ? '暂存成功' : '发布成功';
         return [
             {

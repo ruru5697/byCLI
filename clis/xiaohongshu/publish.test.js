@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { JSDOM } from 'jsdom';
 import { getRegistry } from '@sovovs/bycli/registry';
 import './publish.js';
 function createPageMock(evaluateResults, overrides = {}) {
@@ -39,6 +40,54 @@ function createConditionalPageMock(evaluateImpl, overrides = {}) {
     return page;
 }
 describe('xiaohongshu publish', () => {
+    it('saves the real title when unrelated colour-class inputs also match title', async () => {
+        const dom = new JSDOM(`<input class="d-text --color-text-title" value="保持原值">
+          <input class="d-text" placeholder="填写标题会有更多赞哦" value="">
+          <div contenteditable="true" class="note-content"></div><span>保存成功</span>`, {runScripts:'outside-only'});
+        const win = dom.window;
+        Object.defineProperties(win.HTMLElement.prototype, {
+            offsetParent: {get(){return win.document.body;}},
+            innerText: {get(){return this.textContent;},set(v){this.textContent=v;}},
+            isContentEditable: {get(){return this.getAttribute('contenteditable') === 'true';}},
+        });
+        win.document.execCommand = () => false;
+        const titleInput = win.document.querySelector('input[placeholder]');
+        let modelTitle = '';
+        titleInput.addEventListener('input', () => { modelTitle = titleInput.value; });
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bycli-xhs-real-title-'));
+        const imagePath = path.join(tempDir, 'demo.jpg');
+        fs.writeFileSync(imagePath, Buffer.from([0xff,0xd8,0xff,0xd9]));
+        let savedTitle;
+        const page = createConditionalPageMock(code => {
+            if (code.includes('location.href')) return 'https://creator.xiaohongshu.com/publish/publish?target=image';
+            if (code.includes('const targets =')) return {ok:true};
+            if (code.includes('hasTitleInput') && code.includes('hasVideoSurface')) return {state:'editor_ready'};
+            if (code.includes('dt.items.add(new File')) return {ok:true,count:1};
+            if (code.includes('[class*="upload"][class*="progress"]')) return false;
+            if (code.includes('const sels =') && code.includes('for (const sel of sels)')) return true;
+            if (code.includes('xhs-publish-btn')) {
+                savedTitle = modelTitle;
+                return {ok:true,via:'method',name:'_onSave'};
+            }
+            if (code.includes('__bycli_xhs_fill_phase') || code.includes('const failures') || code.includes('for (const el of document.querySelectorAll')) {
+                const result = win.eval(code);
+                return typeof result === 'function' ? result() : result;
+            }
+            throw new Error(`Unhandled evaluate: ${code.slice(0,100)}`);
+        });
+        try {
+            const rows = await getRegistry().get('xiaohongshu/publish').func(page, {
+                title:'今天账号归大肥鱼值班',content:'主人休息，我来营业',images:imagePath,draft:true,
+            });
+            expect(savedTitle).toBe('今天账号归大肥鱼值班');
+            expect(titleInput.value).toBe(savedTitle);
+            expect(win.document.querySelector('input.--color-text-title').value).toBe('保持原值');
+            expect(rows[0].status).toBe('✅ 暂存成功');
+        } finally {
+            dom.window.close();
+            fs.rmSync(tempDir,{recursive:true,force:true});
+        }
+    });
     it('uses native insertText for contenteditable title fields when available', async () => {
         const cmd = getRegistry().get('xiaohongshu/publish');
         expect(cmd?.func).toBeTypeOf('function');
@@ -501,7 +550,10 @@ describe('xiaohongshu publish', () => {
             },
         ]);
     });
-    it('treats 保存成功 on the draft list as a successful draft save', async () => {
+    it.each(['保存成功', '草稿保存失败', '上传成功', '跳转登录页'])('checks the actual draft outcome: %s', async (message) => {
+        const finalUrl = message === '跳转登录页' ? 'https://creator.xiaohongshu.com/login' : 'https://creator.xiaohongshu.com/publish/publish?from=menu_left&target=image';
+        const dom = new JSDOM('<div>' + message + '</div>', {runScripts:'outside-only'});
+        Object.defineProperty(dom.window.HTMLElement.prototype, 'innerText', {get(){ return this.textContent; }});
         const cmd = getRegistry().get('xiaohongshu/publish');
         expect(cmd?.func).toBeTypeOf('function');
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bycli-xhs-publish-'));
@@ -509,7 +561,7 @@ describe('xiaohongshu publish', () => {
         fs.writeFileSync(imagePath, Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
         const page = createConditionalPageMock((code) => {
             if (code.includes('location.href'))
-                return 'https://creator.xiaohongshu.com/publish/publish?from=menu_left&target=image';
+                return finalUrl;
             if (code.includes("const targets = ['上传图文', '图文', '图片']"))
                 return { ok: true, target: '上传图文', text: '上传图文' };
             if (code.includes('hasTitleInput') && code.includes('hasVideoSurface'))
@@ -534,24 +586,29 @@ describe('xiaohongshu publish', () => {
                 return { ok: true, via: 'click', text: '发布' };
             if (code.includes('labels.some'))
                 return false;
-            if (code.includes('for (const el of document.querySelectorAll')) {
-                return code.includes('保存成功') ? '保存成功' : '';
-            }
+            if (code.includes('const failures') || code.includes('for (const el of document.querySelectorAll')) return dom.window.eval(code);
             throw new Error(`Unhandled evaluate call: ${code.slice(0, 120)}`);
         });
-        const result = await cmd.func(page, {
+        const task = cmd.func(page, {
             title: '草稿成功提示',
             content: '停留在发布页也算成功',
             images: imagePath,
             topics: '',
             draft: true,
         });
+        if (message === '草稿保存失败') {
+            await expect(task).rejects.toMatchObject({code:'DRAFT_SAVE_FAILED'});
+            dom.window.close();
+            return;
+        }
+        const result = await task;
         expect(result).toEqual([
             {
-                status: '✅ 暂存成功',
-                detail: '"草稿成功提示" · 1张图片 · 保存成功',
+                status: message === '保存成功' ? '✅ 暂存成功' : '⚠️ 操作完成，请在浏览器中确认',
+                detail: '"草稿成功提示" · 1张图片 · ' + (message === '保存成功' ? '保存成功' : finalUrl),
             },
         ]);
+        dom.window.close();
     });
     it('does not treat 保存成功 alone as a publish success signal', async () => {
         const cmd = getRegistry().get('xiaohongshu/publish');
