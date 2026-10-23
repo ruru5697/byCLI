@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';import path from 'node:path';import os from 'node:os';import {createHash,randomUUID} from 'node:crypto';
 import {ArgumentError,CliError} from '@sovovs/bycli/errors';
-import {snapshotScript,assertArticleChecks,validateArticleManifest} from './_article-prepare.js';
+import {snapshotScript,assertArticleChecks,validateArticleManifest,compareMarkdown} from './_article-prepare.js';
 import {waitFor} from '../_shared/video-prepare.js';
 import {saveJob} from '../_shared/video-submit.js';
 const hash=x=>createHash('sha256').update(x).digest('hex');
@@ -25,13 +25,18 @@ export function parseArticleReceipt(e){
  const owner=b.data?.user_id;
  return {status:'accepted',httpStatus,code,contentId:validId(id)?id:null,accountId:validId(owner)?owner:null};
 }
+export function preparedArticleBody(job){
+ const body=job.bodyAsStored??job.manifest.body;
+ if(typeof body!=='string'||!compareMarkdown(job.manifest.body,body).ok)throw new CliError('INPUT_CHANGED','Stored Markdown differs from prepared input');
+ return body;
+}
 export async function verifyArticleInputs(job){
- validateArticleManifest(job.manifest);
+ validateArticleManifest(job.manifest);preparedArticleBody(job);
  if(hash(JSON.stringify(job.manifest))!==job.inputSha256||job.assets?.cover?.path!==job.manifest.cover)throw new CliError('INPUT_CHANGED','Prepared manifest or cover metadata differs');
  const bytes=await fs.readFile(job.manifest.cover);if(hash(bytes)!==job.assets.cover.sha256||bytes.length!==job.assets.cover.bytes)throw new CliError('ASSET_CHANGED','Prepared cover bytes changed');
 }
 export async function inspectArticle(page,job){
- const s=await page.evaluate(snapshotScript());assertArticleChecks(s,job.manifest,job.assets,job.upload);
+ const s=await page.evaluate(snapshotScript());assertArticleChecks(s,job.manifest,job.assets,job.upload,preparedArticleBody(job));
  if(s.draftId!==job.draftId)throw new CliError('EDITOR_CHANGED','Exact authorized draft differs');
  const extra=await page.evaluate(String.raw`(async()=>{const p=document.querySelector('.publish-popup').__vue__.post;const value=JSON.stringify(Object.fromEntries(['link_url','is_gfw','is_english','is_original','type','html'].map(k=>[k,p[k]??null])));return [...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value)))].map(b=>b.toString(16).padStart(2,'0')).join('')})()`);
  return {draftId:s.draftId,account:s.account,title:s.title,bodySha256:s.bodySha256,coverHash:s.cover.hash,categoryId:s.categoryId,tags:s.tags,summary:s.summary,columns:s.columns,topics:s.topics,syncToOrg:s.syncToOrg,extraHash:extra};
@@ -71,7 +76,7 @@ export async function articleJobAction(page,args,query){
   job.attempt={id:randomUUID(),startedAt:new Date().toISOString(),confirmation:job.review.token};job.status='submitting';job.submitted=null;job.finalPublishAction='attempt_recorded';await save();
   try{
    if(typeof page.evaluateOnce!=='function')throw Error('No one-shot browser action');
-   const expected={url:'https://juejin.cn/editor/drafts/'+job.draftId,accountId:job.manifest.accountId,title:job.manifest.title,body:job.manifest.body,attemptId:job.attempt.id};
+   const expected={url:'https://juejin.cn/editor/drafts/'+job.draftId,accountId:job.manifest.accountId,title:job.manifest.title,body:preparedArticleBody(job),attemptId:job.attempt.id};
    await page.evaluateOnce(`(${finalArticleGesture.toString()})(${JSON.stringify(expected)})`);
    await page.wait({time:25});const entries=await page.readNetworkCapture(),receipts=entries.map(parseArticleReceipt).filter(Boolean);
    job.receipt=receipts.length===1?{...receipts[0],receivedAt:new Date().toISOString(),endpoint:PUBLISH_PATH}:{status:'result_unknown',reason:receipts.length?'multiple_receipts':'receipt_missing'};

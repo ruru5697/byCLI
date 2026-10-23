@@ -24,14 +24,15 @@ describe('single final gesture',()=>{
 // Exercise the durable boundary with a real private job file and controlled browser failures.
 import fs from 'node:fs/promises';import os from 'node:os';import path from 'node:path';import {createHash} from 'node:crypto';
 const sha=x=>createHash('sha256').update(x).digest('hex');
-async function publishingFixture(action){
+async function publishingFixture(action,normalized=false){
  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'bycli-juejin-submit-'));vi.stubEnv('BYCLI_CONFIG_DIR',dir);
  try{
   const id='11111111-1111-4111-8111-111111111111',jobDir=path.join(dir,'publish-jobs','juejin',id);await fs.mkdir(jobDir,{recursive:true});const cover=path.join(dir,'cover.png');await fs.writeFile(cover,'cover');
   const manifest={title:'测试文章',body:'## body',summary:'这是一篇用于验证发布边界的文章，检查本地记录是否先于最终动作写入，以及网络异常时是否会阻止再次提交。',cover,category:'代码人生',tags:['程序员'],columns:[],topics:[],visibility:'public',accountId:'456'};
   const job={jobId:id,platform:'juejin',contentType:'article',draftId:'789',status:'ready_for_confirmation',submitted:false,manifest,assets:{cover:{path:cover,sha256:sha('cover'),bytes:5,width:1200,height:800}},upload:{sha256:sha('cover'),bytes:5,hash:'cover-binding'},inputSha256:sha(JSON.stringify(manifest))};
+  if(normalized){job.manifest.body='| a | b |\n| --- | --- |\n| hello world | 2 |';job.bodyAsStored='|a|b|\n|---|---|\n|hello world|2|';job.inputSha256=sha(JSON.stringify(job.manifest));}
   const file=path.join(jobDir,'job.json');await fs.writeFile(file,JSON.stringify(job));
-  const snapshot={draftId:'789',url:'https://juejin.cn/editor/drafts/789',account:{id:'456',name:'test'},title:manifest.title,body:manifest.body,bodySha256:sha(manifest.body),modelMatches:true,category:manifest.category,categoryId:'100',categorySelected:[manifest.category],tags:[{id:'200',title:'程序员'}],summary:manifest.summary,modelSummary:manifest.summary,columns:[],topics:[],topicState:[],syncToOrg:false,cover:{present:true,visible:true,loaded:true,matchesModel:true,width:1200,height:800,updating:false,hash:'cover-binding'},panelOpen:true,finalControlPresent:true,finalControlDisabled:false,status:'editing'};
+  const snapshot={draftId:'789',url:'https://juejin.cn/editor/drafts/789',account:{id:'456',name:'test'},title:manifest.title,body:job.bodyAsStored??manifest.body,bodySha256:sha(job.bodyAsStored??manifest.body),modelMatches:true,category:manifest.category,categoryId:'100',categorySelected:[manifest.category],tags:[{id:'200',title:'程序员'}],summary:manifest.summary,modelSummary:manifest.summary,columns:[],topics:[],topicState:[],syncToOrg:false,cover:{present:true,visible:true,loaded:true,matchesModel:true,width:1200,height:800,updating:false,hash:'cover-binding'},panelOpen:true,finalControlPresent:true,finalControlDisabled:false,status:'editing'};
   const page={tabs:async()=>[{page:'one'}],setActivePage:vi.fn(),focusWindow:vi.fn(),evaluate:vi.fn(async code=>code.includes('articleSnapshot')?structuredClone(snapshot):code==='location.origin+location.pathname'?snapshot.url:code.includes('const p=document.querySelector')?'extra-hash':true),startNetworkCapture:vi.fn(async()=>true),evaluateOnce:vi.fn(async()=>{const current=JSON.parse(await fs.readFile(file));expect(current.status).toBe('submitting');expect(current.attempt.id).toBeTruthy();return true}),wait:vi.fn(),readNetworkCapture:vi.fn(async()=>[entry({err_no:0,data:{article_id:'123',user_id:'456'}})])};
   const reviewed=await articleJobAction(page,{review:id},vi.fn());await action({id,file,page,snapshot,token:reviewed[0].confirmation,job});
  }finally{vi.unstubAllEnvs();await fs.rm(dir,{recursive:true,force:true})}
@@ -43,4 +44,26 @@ describe('durable article submit lifecycle',()=>{
  it('blocks modified cover bytes',()=>publishingFixture(async f=>{await fs.writeFile(f.job.manifest.cover,'changed');await expect(articleJobAction(f.page,{submit:f.id,confirm:f.token},vi.fn())).rejects.toMatchObject({code:'ASSET_CHANGED'});expect(f.page.evaluateOnce).not.toHaveBeenCalled();}));
  it('retains unknown after final transport failure and forbids retry',()=>publishingFixture(async f=>{f.page.evaluateOnce.mockRejectedValue(new Error('transport disconnected'));const r=await articleJobAction(f.page,{submit:f.id,confirm:f.token},vi.fn());expect(r[0].status).toBe('result_unknown');await expect(articleJobAction(f.page,{review:f.id},vi.fn())).rejects.toMatchObject({code:'ALREADY_ATTEMPTED'});expect(f.page.evaluateOnce).toHaveBeenCalledTimes(1);}));
  it('does not treat capture failure as a submission attempt',()=>publishingFixture(async f=>{f.page.startNetworkCapture.mockResolvedValue(false);await expect(articleJobAction(f.page,{submit:f.id,confirm:f.token},vi.fn())).rejects.toMatchObject({code:'CAPTURE_UNAVAILABLE'});expect(JSON.parse(await fs.readFile(f.file)).attempt).toBeUndefined();expect(f.page.evaluateOnce).not.toHaveBeenCalled();}));
+});
+
+
+describe('normalized Markdown review and submission',()=>{
+ it('reviews and submits the exact stored body while preserving original input',()=>publishingFixture(async f=>{
+  const r=await articleJobAction(f.page,{submit:f.id,confirm:f.token},vi.fn());
+  expect(r[0]).toMatchObject({status:'accepted',submitted:true});
+  const script=f.page.evaluateOnce.mock.calls[0][0];
+  expect(script).toContain(JSON.stringify(f.job.bodyAsStored));
+  const saved=JSON.parse(await fs.readFile(f.file));
+  expect(saved.manifest.body).toBe(f.job.manifest.body);expect(saved.bodyAsStored).not.toBe(saved.manifest.body);
+ },true));
+ it('rejects a stored body that is not equivalent to the input before publishing',()=>publishingFixture(async f=>{
+  const job=JSON.parse(await fs.readFile(f.file));job.bodyAsStored='changed content';await fs.writeFile(f.file,JSON.stringify(job));
+  await expect(articleJobAction(f.page,{submit:f.id,confirm:f.token},vi.fn())).rejects.toMatchObject({code:'INPUT_CHANGED'});
+  expect(f.page.evaluateOnce).not.toHaveBeenCalled();
+ },true));
+ it('rejects live content drift after review',()=>publishingFixture(async f=>{
+  f.snapshot.body=f.job.bodyAsStored.replace('hello world','helloworld');f.snapshot.bodySha256=sha(f.snapshot.body);
+  await expect(articleJobAction(f.page,{submit:f.id,confirm:f.token},vi.fn())).rejects.toMatchObject({code:'FIELD_MISMATCH'});
+  expect(f.page.evaluateOnce).not.toHaveBeenCalled();
+ },true));
 });
