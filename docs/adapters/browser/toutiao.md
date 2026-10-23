@@ -103,6 +103,7 @@ bycli toutiao video-download VIDEO_URL_OR_ID --output ./downloads -f json
 
 | 命令 | 内容与必要参数 | 执行结果 |
 |---|---|---|
+| `bycli toutiao save-draft TITLE` | `--content TEXT` 或 `--content-file PATH`，可选 `--cover PATH` | 自动保存后重新打开核对，返回 `draft_saved`，不提交发布 |
 | `bycli toutiao article-publish TITLE` | `--content TEXT` 或 `--content-file PATH` | 默认预检，`--execute` 上传填写并提交文章 |
 | `bycli toutiao image-publish TITLE` | `--image PATH`，执行时需 `--content MARKDOWN_PATH` | 默认预检，`--execute` 提交微头条图文 |
 | `bycli toutiao video-publish TITLE` | `--video PATH`，执行时还需 `--cover PATH` | 默认预检，`--execute` 提交视频 |
@@ -119,6 +120,19 @@ bycli toutiao video-publish '视频标题' --video /absolute/video.mp4 --cover /
 文章标题2至30字符，正文按纯文本填写。图文入口是微头条：当前实现最多取原始Markdown正文的2000字符，超出时按段落截取并在返回消息说明，预览时应核对截取结果。视频执行时必须有封面，需要平台允许的文件输入与裁剪交互。
 
 `submitted` 表示已执行提交，不代表审核通过；`pending` 表示点击后作品列表暂未确认。结果未知时先核对平台作品管理，不自动重复执行。
+
+## 保存文章草稿
+
+```bash
+bycli toutiao save-draft '文章标题' --content-file ./body.txt -f json
+bycli toutiao save-draft '文章标题' --content-file ./body.txt --cover ./cover.jpg --require-cover true -f json
+```
+
+此命令需要登录头条号后台，会填写文章、等待自动保存，再重新打开编辑器核对标题和正文；成功返回 `status: draft_saved` 和 `submitted: false`。正文按纯文本填写，核对只忽略额外空行和换行符差异，保留词间空格。失败时先检查保留的编辑器和平台草稿，避免盲目重复执行。
+
+编辑器已有标题或正文时默认拒绝覆盖；确认要替换后才传 `--replace true`。封面支持相对和绝对路径，注入浏览器前会转为绝对路径。默认在封面失败时报告状态并继续核对正文；传 `--require-cover true` 时必须同时提供 `--cover`，且封面必须成功应用并在重开后仍存在，否则命令失败。封面确认操作只查找上传面板内的按钮。
+
+返回字段包括 `status`、`title`、`contentLength`、`restoredLength`、`cover`、`url`、`submitted` 和 `message`。`cover` 为 `none`、`restored` 或封面失败状态及诊断信息。该命令使用固定等待后重开核对，平台响应较慢时可能报未确认；这不代表平台一定没有保存草稿。
 
 ## 单篇统计和评论
 
