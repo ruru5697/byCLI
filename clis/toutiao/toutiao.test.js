@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getRegistry } from '@sovovs/bycli/registry';
-import { executeCommand } from '../../src/execution.ts';
 import { ArgumentError, AuthRequiredError, CommandExecutionError, EmptyResultError } from '@sovovs/bycli/errors';
 
 import {
@@ -481,7 +480,7 @@ describe('toutiao hot adapter (registry func)', () => {
             }), { status: 200 }),
         )));
 
-        const rows = await executeCommand(cmd, { limit: 2 });
+        const rows = await cmd.func({ limit: 2 });
         expect(rows.map(r => r.title)).toEqual(['kept', 'also kept']);
         expect(rows.map(r => r.rank)).toEqual([1, 2]); // dense rank after empty-title drop
     });
@@ -509,7 +508,7 @@ describe('toutiao search adapter (registry func)', () => {
         const fetchMock = vi.fn().mockResolvedValue(new Response(html, { status: 200 }));
         vi.stubGlobal('fetch', fetchMock);
 
-        const rows = await executeCommand(cmd, { query: '人工 智能', type: 'video', limit: 5 });
+        const rows = await cmd.func({ query: '人工 智能', type: 'video', limit: 5 });
         const requested = new URL(fetchMock.mock.calls[0][0]);
         expect(requested.origin + requested.pathname).toBe(TOUTIAO_SEARCH_URL);
         expect(requested.searchParams.get('keyword')).toBe('人工 智能');
