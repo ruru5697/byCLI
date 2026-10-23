@@ -49,3 +49,21 @@ describe('sohu native video download', () => {
         expect(page.evaluate).toHaveBeenCalledTimes(30);
     });
 });
+
+describe('Sohu Vue body player compatibility',()=>{
+ function modern(html,setup=()=>{}){
+  const dom=new JSDOM(html,{url:'https://www.sohu.com/a/1089674669_123034857',runScripts:'outside-only'});
+  setup(dom.window);try{return dom.window.eval(buildSohuVideoExtractJs('1089674669_123034857'))}finally{dom.window.close()}
+ }
+ it('extracts a canonical source from the new body container and ignores recommendations',()=>{
+  const result=modern('<div id="mainVideoContent"><div id="sohuPlayer"><video class="mptfe-player__video" src="https://v2.sohu.com/v/url/752198084_123034857.MP4"></video></div></div><video src="https://v2.sohu.com/v/url/111_123034857.MP4"></video>');
+  expect(result).toMatchObject({videoId:'752198084',source:'article_video',articleId:'1089674669_123034857'});
+ });
+ it('reads a component-bound player source while its DOM source is blob',()=>{
+  expect(modern('<div id="mainVideoContent"><video src="blob:local"></video></div>',w=>{const v=w.document.querySelector('video');v.__vue__={videoId:'752198084'};v.ms={media:{kernel:{cdnurl:'https://cdn.vod.tv.itc.cn/movie.mp4'}}}})).toMatchObject({videoId:'752198084',source:'article_player'});
+ });
+ it.each(['https://v2.sohu.com/v/url/752198084_999.MP4','https://evil.test/v/url/752198084_123034857.MP4','blob:unavailable'])('rejects unbound/foreign source %s',src=>expect(modern(`<div id="sohuPlayer"><video src="${src}"></video></div>`)).toMatchObject({pending:true}));
+ it('does not select one of multiple distinct body videos',()=>expect(modern('<div id="mainVideoContent"><video src="https://v2.sohu.com/v/url/1_123034857.MP4"></video><video src="https://v2.sohu.com/v/url/2_123034857.MP4"></video></div>')).toMatchObject({error:expect.stringContaining('Multiple')}));
+ it('refuses explicit video identity conflicting with the canonical link',()=>expect(modern('<div id="mainVideoContent" data-vid="1"><video src="https://v2.sohu.com/v/url/2_123034857.MP4"></video></div>')).toMatchObject({pending:true}));
+ it('ignores a matching named player nested in a recommendation block',()=>expect(modern('<div id="mainVideoContent"><div class="recommend"><div id="sohuPlayer"><video src="https://v2.sohu.com/v/url/1_123034857.MP4"></video></div></div></div>')).toMatchObject({pending:true}));
+});

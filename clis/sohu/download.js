@@ -19,28 +19,50 @@ export function buildSohuVideoExtractJs(articleId) {
     return String.raw`(() => {
         const expected = ${JSON.stringify(articleId)};
         if (location.pathname.replace(/\/$/, '') !== '/a/' + expected) return { error: 'Unexpected article page' };
-        const roots = [...document.querySelectorAll('.place_video')];
-        const player = window._player;
+        const roots = [...document.querySelectorAll('.place_video, #mainVideoContent, #sohuPlayer')]
+            .filter(root => !root.closest('.recommend,.recommend-list,.advertisement,[data-ad]'));
+        const candidates = [];
         for (const root of roots) {
-            const vid = root.getAttribute('data-vid') || root.getAttribute('data-bid') || root.id.replace(/^ab/, '');
-            const video = root.querySelector('video');
-            if (!vid || !video) continue;
-            // This private shape is capability-detected and checked against the body video ID.
-            const matches = String(player?.videoData?.vid || '') === String(vid);
-            const media = video.ms?.media;
-            const raw = matches ? media?.kernel?.cdnurl : null;
-            const direct = video.currentSrc || video.src || video.querySelector('source')?.src;
-            const candidate = raw || direct;
-            if (!candidate || !/^https?:\/\//i.test(candidate)) continue;
-            let u;
-            try { u = new URL(candidate); } catch { continue; }
-            if (u.username || u.password) continue;
-            const host = u.hostname.toLowerCase();
-            if (!(host === 'itc.cn' || host.endsWith('.itc.cn') || host === 'sohu.com' || host.endsWith('.sohu.com'))) continue;
-            if (/\.m3u8(?:$|\?)/i.test(candidate)) return { unsupported: 'HLS playlists are not supported by native MP4 download' };
-            return { articleId: expected, videoId: String(vid), url: candidate,
-                duration: video.duration || null, source: raw ? 'article_player' : 'article_video' };
+            const videos = [...root.querySelectorAll('video')];
+            for (const video of videos) {
+                if (video.closest('.recommend,.recommend-list,.advertisement,[data-ad]')) continue;
+                const owner = video.closest('.place_video') || root;
+                const vm = video.__vue__ || video.closest('#sohuPlayer')?.__vue__ || owner.__vue__ || root.__vue__;
+                const props = vm?.$props || video.__vueParentComponent?.props || root.__vueParentComponent?.props;
+                const direct = video.currentSrc || video.src || video.querySelector('source')?.src;
+                // New Sohu players expose their identity on the component or the canonical
+                // v2.sohu.com/v/url/<video>_<author>.MP4 link inside the body player.
+                let linked;
+                try { linked = new URL(direct, location.href); } catch {}
+                const canonical = linked?.hostname === 'v2.sohu.com'
+                    ? linked.pathname.match(/^\/v\/url\/(\d+)_(\d+)\.MP4$/i) : null;
+                const explicit = owner.getAttribute('data-vid') || owner.getAttribute('data-bid')
+                    || owner.id.match(/^ab(\d+)$/)?.[1] || root.getAttribute('data-vid')
+                    || vm?.videoData?.vid || props?.vid || props?.videoId || vm?.vid || vm?.videoId;
+                const vid = String(explicit || canonical?.[1] || '');
+                if (!/^\d+$/.test(vid) || canonical && (canonical[1] !== vid || canonical[2] !== expected.split('_')[1])) continue;
+                const player = window._player;
+                const matches = String(player?.videoData?.vid || '') === vid;
+                const raw = matches ? video.ms?.media?.kernel?.cdnurl : null;
+                // A DOM-bound component is usable without relying on an unrelated global player.
+                const componentSource = String(vm?.videoData?.vid || props?.vid || props?.videoId || vm?.vid || vm?.videoId || '') === vid
+                    ? video.ms?.media?.kernel?.cdnurl : null;
+                const candidate = raw || componentSource || direct;
+                if (!candidate || !/^https?:\/\//i.test(candidate)) continue;
+                let u;
+                try { u = new URL(candidate); } catch { continue; }
+                if (u.username || u.password) continue;
+                const host = u.hostname.toLowerCase();
+                if (!(host === 'itc.cn' || host.endsWith('.itc.cn') || host === 'sohu.com' || host.endsWith('.sohu.com'))) continue;
+                if (/\.m3u8(?:$|\?)/i.test(candidate)) { candidates.push({unsupported:'HLS playlists are not supported by native MP4 download',videoId:vid}); continue; }
+                candidates.push({ articleId: expected, videoId: vid, url: candidate,
+                    duration: Number.isFinite(video.duration) ? video.duration : null,
+                    source: raw || componentSource ? 'article_player' : 'article_video' });
+            }
         }
+        const unique = [...new Map(candidates.map(c => [c.videoId, c])).values()];
+        if (unique.length > 1) return { error: 'Multiple body video identities; cannot choose one unambiguously' };
+        if (unique.length === 1) return unique[0];
         return { pending: true, playerCount: roots.length };
     })()`;
 }
