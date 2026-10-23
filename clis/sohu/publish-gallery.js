@@ -1,4 +1,4 @@
 import {cli,Strategy} from '@sovovs/bycli/registry';
 import {prepareSohuContent} from './_content-prepare.js';
 import {contentArgs,contentCommand} from './_content-submit.js';
-cli({site:'sohu',name:'publish-gallery',access:'write',description:'准备搜狐号图集：上传图片与封面，填写逐图配文和必填项，人工确认后单次提交、回执与状态查询',domain:'mp.sohu.com',strategy:Strategy.COOKIE,browser:true,navigateBefore:false,siteSession:'persistent',args:contentArgs,columns:['status','job_id','content_type','title','submitted','account','content_id','confirmation','query_status','report','preview'],func:(page,kwargs)=>contentCommand(page,kwargs,'gallery',prepareSohuContent)});
+cli({site:'sohu',name:'publish-gallery',access:'write',description:'准备搜狐号图集：上传图片与封面，填写逐图配文和必填项，保存并核验草稿，人工确认后单次提交与状态查询',domain:'mp.sohu.com',strategy:Strategy.COOKIE,browser:true,navigateBefore:false,siteSession:'persistent',args:contentArgs,columns:['status','remote_draft_id','recovery','job_id','content_type','title','submitted','account','content_id','confirmation','query_status','report','preview'],func:(page,kwargs)=>contentCommand(page,kwargs,'gallery',prepareSohuContent)});

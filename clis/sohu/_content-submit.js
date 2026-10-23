@@ -1,3 +1,5 @@
+import {resumeCategory} from './_resume.js';
+import {draftAction} from './_draft.js';
 import {CliError,ArgumentError} from '@sovovs/bycli/errors';
 import {digest,sohuStatuses,sohuContentJobAction,managers} from '../_shared/video-submit.js';
 import {openManagerPage} from '../_shared/video-site-submit.js';
@@ -10,7 +12,7 @@ const paragraphs=value=>(value||'').replace(/\r\n/g,'\n').split(/\n+/).filter(p=
 export function assertContentForSubmit(s,job){
  const type=job.contentType,m=job.manifest,a=job.assets,baseline=job.checks;
  if(!['gallery','article'].includes(type)||s.unavailable||s.url!==contentUrl(type)||s.title!==m.title)throw new CliError('FIELD_MISMATCH','Authorized content editor or title differs');
- if(!Array.isArray(s.pictures)||s.pictures.length!==a.images.length||new Set(s.pictures.map(p=>p.uploadHash)).size!==a.images.length||s.pictures.some((p,i)=>!p.uploadHash||p.uploadHash!==baseline.pictures[i]?.uploadHash||p.width!==a.images[i].width||p.height!==a.images[i].height||(type==='gallery'?(p.sha256!=null&&p.sha256!==a.images[i].sha256||p.description!==m.images[i].description):(!p.loaded||!p.resourceReady||p.name!==a.images[i].name))))throw new CliError('IMAGE_MISMATCH','Ordered uploaded image identities or content differ from the prepared job');
+ if(!Array.isArray(s.pictures)||s.pictures.length!==a.images.length||new Set(s.pictures.map(p=>p.uploadHash)).size!==a.images.length||s.pictures.some((p,i)=>!p.uploadHash||p.uploadHash!==baseline.pictures[i]?.uploadHash||p.width!==a.images[i].width||p.height!==a.images[i].height||(type==='gallery'?(p.sha256!=null&&p.sha256!==a.images[i].sha256||p.description!==m.images[i].description):(!p.loaded||(!job.draftVerification&&job.editorPersistence!=='verified_remote_draft'&&!p.resourceReady)||p.name!==a.images[i].name))))throw new CliError('IMAGE_MISMATCH','Ordered uploaded image identities or content differ from the prepared job');
  if(type==='gallery'&&(JSON.stringify(s.descriptions)!==JSON.stringify(m.images.map(p=>p.description))||JSON.stringify(s.category)!==JSON.stringify(m.category)))throw new CliError('FIELD_MISMATCH','Gallery captions or category differ');
  if(type==='article'){
   if(JSON.stringify(paragraphs(s.body))!==JSON.stringify(paragraphs(m.body))||s.summary!==m.summary||s.attribute!=='属性\n\n未选择')throw new CliError('FIELD_MISMATCH','Article paragraph text, summary or attribute differs');
@@ -73,8 +75,12 @@ export function makeSohuContentAdapter(type){
   query:querySohuContent,
  };
 }
-export const contentArgs=[{name:'input',help:'Local content JSON manifest'},{name:'prepare',type:'bool',default:false},{name:'review',help:'Review a prepared local job UUID; confirmation expires in 30 minutes'},{name:'submit',help:'Submit a reviewed job once after explicit human approval'},{name:'confirm',help:'Exact token from review'},{name:'status',help:'Query a local job and its exact verified content ID'},{name:'timeout',type:'int',default:300}];
+export const contentArgs=[{name:'resume',valueRequired:true,help:'Resume a retained category-selection checkpoint'},{name:'category',valueRequired:true,help:'JSON [primary, secondary] for --resume'},{name:'save-draft',valueRequired:true,help:'Save a prepared job to the remote draft box once'},{name:'draft-status',valueRequired:true,help:'Reconcile a draft save without another click'},{name:'open-draft',valueRequired:true,help:'Reopen and verify an exact saved draft'},{name:'input',help:'Local content JSON manifest'},{name:'prepare',type:'bool',default:false},{name:'review',help:'Review a prepared local job UUID; confirmation expires in 30 minutes'},{name:'submit',help:'Submit a reviewed job once after explicit human approval'},{name:'confirm',help:'Exact token from review'},{name:'status',help:'Query a local job and its exact verified content ID'},{name:'timeout',type:'int',default:300}];
 export function contentCommand(page,kwargs,type,prepare){
+ if(kwargs.resume)return resumeCategory(page,kwargs,type,makeSohuContentAdapter(type));
+ if(kwargs.category)throw new ArgumentError('--category requires --resume');
+ kwargs={...kwargs,saveDraft:kwargs['save-draft']??kwargs.saveDraft,draftStatus:kwargs['draft-status']??kwargs.draftStatus,openDraft:kwargs['open-draft']??kwargs.openDraft};
+ if(kwargs.saveDraft||kwargs.draftStatus||kwargs.openDraft)return draftAction(page,kwargs,type,makeSohuContentAdapter(type));
  if(kwargs.prepare&&!kwargs.review&&!kwargs.submit&&!kwargs.status&&!kwargs.confirm&&kwargs.input)return prepare(page,kwargs,type);
  return sohuContentJobAction(page,kwargs,makeSohuContentAdapter(type),type);
 }

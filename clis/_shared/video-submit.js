@@ -35,7 +35,7 @@ export async function withJob(platform, id, action, contentType = 'video') {
         return await action(job, () => saveJob(file, job), file);
     } finally { await lock.close(); await fs.rm(file + '.lock', { force: true }); }
 }
-async function verifyAssets(job) {
+export async function verifyAssets(job) {
     if (digest({ manifest: job.manifest, assets: job.assets }) !== job.inputSha256) fail('INPUT_CHANGED', 'Manifest or asset metadata changed');
     let assets;
     if(['gallery','article'].includes(job.contentType)) {

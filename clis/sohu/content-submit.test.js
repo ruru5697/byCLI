@@ -54,3 +54,14 @@ describe('single dispatch browser control',()=>{
  it('uses evaluateOnce and never invokes a fallback after a possible dispatch error',async()=>{const p={evaluateOnce:vi.fn().mockRejectedValue(Error('lost')),click:vi.fn()};await expect(makeSohuContentAdapter('article').trigger(p,{manifest:{title:'story'},preparedAccount:{id:'456'},remoteDraftId:'123'})).rejects.toThrow();expect(p.evaluateOnce).toHaveBeenCalledTimes(1);expect(p.click).not.toHaveBeenCalled();});
  it.each(['123','different'])('atomically checks the target draft %s before clicking',async draft=>{const click=vi.fn(),button={innerText:'发布',getBoundingClientRect:()=>({width:10}),matches:()=>false,click};const context={URL,location:{href:'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle?id='+draft},document:{querySelector:selector=>selector==='#app'?{__vue__:{$store:{state:{app:{userInfo:{id:'456'}}}}}}:{value:'story'},querySelectorAll:()=>[button]}};const p={evaluateOnce:code=>Promise.resolve().then(()=>vm.runInNewContext(code,context))};const action=makeSohuContentAdapter('article').trigger(p,{manifest:{title:'story'},preparedAccount:{id:'456'},remoteDraftId:'123'});if(draft==='123'){await action;expect(click).toHaveBeenCalledOnce()}else{await expect(action).rejects.toThrow();expect(click).not.toHaveBeenCalled()}});
 });
+
+describe('verified draft restoration before publishing review',()=>{
+ it('accepts a restored article without an in-memory upload task only after draft verification',()=>{
+  const f=ready('article');f.s.pictures[0].resourceReady=false;
+  expect(()=>assertContentForSubmit(f.s,f.job)).toThrow();
+  expect(()=>assertContentForSubmit(f.s,{...f.job,draftVerification:true})).not.toThrow();
+  expect(()=>assertContentForSubmit(f.s,{...f.job,editorPersistence:'verified_remote_draft'})).not.toThrow();
+  f.s.pictures[0].uploadHash='replacement';
+  expect(()=>assertContentForSubmit(f.s,{...f.job,editorPersistence:'verified_remote_draft'})).toThrow();
+ });
+});
