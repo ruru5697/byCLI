@@ -1,6 +1,6 @@
 # 搜狐号图集与文章发布准备
 
-原生浏览器命令的prepare模式只完成准备，不点击发布、定时发布或存草稿；另有独立review、submit和status模式。页面可能自动保存草稿及将上传图片同步至素材库；`remoteDraftId=null`，本地报告不保证远端草稿持久化。需要Chrome中的byCLI扩展已连接、搜狐号已登录。
+原生浏览器命令的prepare模式只完成准备，不点击发布、定时发布或存草稿；另有独立review、submit、status以及save-draft、draft-status、open-draft模式。页面可能自动保存草稿及将上传图片同步至素材库；`remoteDraftId=null`，本地报告不保证远端草稿持久化。需要Chrome中的byCLI扩展已连接、搜狐号已登录。
 
 ```bash
 node dist/src/main.js sohu publish-gallery --prepare --input ./gallery.json --timeout 300 -f json
@@ -28,7 +28,7 @@ node dist/src/main.js sohu publish-article --prepare --input ./article.json --ti
 }
 ```
 
-图集支持3–40张有序图片，每张配文1–200个JavaScript字符单位。标题为5–72个字符单位、单行。分类必须显式给出两个层级；一级分类切换后等待二级选项更新，再选择并复核，不保留上一级的旧选项。
+图集支持3–40张有序图片，每张配文1–200个JavaScript字符单位。标题为5–72个字符单位、单行。分类提供时须给出两个层级；也可省略category，上传后返回category_required和可恢复作业ID。通过当前编辑器读取真实分类，再用resume继续同一作业，无需重新上传。视频和图集分别读取自己的控件，长列表目标滚动到可见区域后点击并回读验证。
 
 ## 文章清单
 
@@ -88,7 +88,7 @@ node dist/src/main.js sohu publish-article --status 021a0da7-f566-47fa-b2c4-3270
 
 prepare/review/submit/status互斥，input仅用于prepare，confirm仅用于submit；两类命令也不能操作对方或视频作业。review重新验证本地文件与浏览器已上传媒体身份、账号、正文/配文、封面和选定设置，签发30分钟确认码。发布前必须获得用户对具体内容的明确授权。
 
-新准备作业及仍在原受控编辑页中的draft_saved作业可以review。review绑定已有远端草稿ID（如果URL已经给出）；不会按标题恢复任意草稿。编辑页关闭时返回EDITOR_MISSING，需要重新准备或另行验证恢复，不能靠旧报告直接提交。文章自动保存会合并空白段间距，review允许这种空白段差异，非空段落文字仍须逐字一致；生成确认码之后的正文/设置变化均会使submit失败。
+新准备作业及仍在原受控编辑页中的draft_saved作业可以review。review绑定已有远端草稿ID（如果URL已经给出）；不会按标题恢复任意草稿。未保存的编辑页关闭时返回EDITOR_MISSING；已验证的draft_saved作业可用open-draft按精确ID重开并复核，再重新review，不能靠旧报告直接提交。文章自动保存会合并空白段间距，review允许这种空白段差异，非空段落文字仍须逐字一致；生成确认码之后的正文/设置变化均会使submit失败。
 
 submit启动对应类型的精确响应捕获并再次复核，持久化唯一attempt后，仅以evaluateOnce点击一次已知发布控件。图集回执只认publishAlbum/v2，文章只认publish/v2，不接受视频、存草稿、其他类型或其他域名响应。两类新接口均要求HTTP成功、code=2000000且success严格为true。缺失/多条/截断/矛盾回执和可能已发出的通信故障均保留未知，不自动重发；任何已有attempt的作业再次review/submit均返回ALREADY_ATTEMPTED。
 
@@ -102,3 +102,41 @@ accepted只代表受理。status用回执或已独立验证的精确内容ID，�
 ## 发布后的图集与文章数据
 
 本机账号绑定的验收素材、回执和实验脚本不随包分发。可用性与验证范围见[原生连接器说明](../guide/native-connectors.md)。
+
+
+## 分类发现、失败恢复和编辑器释放（2026-10-22 本地修复）
+
+以下命令与发布、stats使用相同的搜狐持久适配器会话。它们不使用通用browser会话枚举适配器页签；不重启浏览器，也不绕过编辑器保护。
+
+```bash
+bycli sohu editor -f json
+bycli sohu editor --open PAGE_ID
+bycli sohu editor --categories -f json
+# 选择当前形态的一级分类并列出它的二级分类；这一步会改变编辑器中的一级选中值
+bycli sohu editor --categories --primary 搞笑 -f json
+bycli sohu publish-gallery --resume JOB_UUID --category '["搞笑","综合"]' -f json
+bycli sohu publish-video --resume JOB_UUID --category '["科技","黑科技"]' -f json
+# 用户明确放弃当前准备后，精确关闭该页签并清除本地作业的页签绑定和旧review
+bycli sohu editor --close PAGE_ID --discard -f json
+```
+
+resume仅支持本版本产生的selecting_category检查点（category_required或该阶段failed）；复验本地文件、原账号及已上传素材，补齐分类和声明后更新原作业，不重新上传。旧版本没有检查点的失败作业不自动迁移。恢复后重新生成预览，仍未提交。
+
+## 显式保存和恢复文章、图集草稿（2026-10-22 本地修复）
+
+```bash
+bycli sohu publish-article --save-draft JOB_UUID -f json
+bycli sohu publish-gallery --save-draft JOB_UUID -f json
+# 保存响应不明时只复查，绝不再次点击
+bycli sohu publish-gallery --draft-status JOB_UUID -f json
+# 已验证保存的草稿在关闭原编辑器后按精确ID重新打开
+bycli sohu publish-gallery --open-draft JOB_UUID -f json
+```
+
+save-draft独立于prepare和submit；已有发布attempt的作业禁止保存草稿。操作前复验内容、素材、账号及控件，持久化draftSaveAttempt后，以nativeClickOnce向精确命中的“存草稿”按钮发送一次原生鼠标手势，不调用发布。保存成功须精确核对所属账号的管理记录为草稿（status=1，文章type=2、图集type=3），再按同一ID重新打开，验证正文/逐图配文、顺序、媒体身份、封面和设置。计数增加或点击返回均不构成成功。
+
+保存返回draft_saved与remote_draft_id，保留重开的编辑器；需要运行stats时，先用editor关闭该编辑器。草稿身份仍保留，可用open-draft恢复，发布前须重新review。当前一次作业只允许一次显式保存手势；已验证保存后的重复save-draft返回同一草稿ID，不重复点击；未确认结果时重复save-draft报DRAFT_SAVE_ALREADY_ATTEMPTED，使用draft-status核对。结果不明为draft_save_unknown，保留attempt和现场，不自动重复保存或发布。
+
+当前保存响应兼容仅把同源save/draft端点的明确成功ID作为候选，publish端点不能证明保存草稿；候选ID仍需管理记录与重开内容双重验证。未知响应、第一页未找到、媒体URL身份变化或站点控件变化均明确保留未验证结果。
+
+视频仍只提供实时编辑器准备，未实现可靠远端草稿保存；不能将视频prepare结果称为进入草稿箱。以上新增流程已完成本地DOM及状态机测试，尚未完成本轮真实网站保存验收。
