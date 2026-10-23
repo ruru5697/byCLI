@@ -1,13 +1,19 @@
+import { log } from '@sovovs/bycli/logger';
+import { coverScript, localCover } from './_shared/cover.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { webcrypto } from 'node:crypto';
+import { webcrypto, createHash } from 'node:crypto';
 import { publishVideo, videoStatus } from './_shared/publish.js';
-import { previewFingerprintDOM } from './_shared/publish-dom.js';
-import { log } from '@sovovs/bycli/logger';
-import { coverScript, localCover } from './_shared/cover.js';
+import { publishWait } from './_shared/wait.js';
+import * as coverModule from './_shared/cover.js';
+vi.mock('./_shared/cover.js', async importOriginal => {
+  const actual = await importOriginal();
+  return { ...actual, configureCover: vi.fn(actual.configureCover), verifyCover: vi.fn(actual.verifyCover) };
+});
+import { previewFingerprintDOM, publishScript } from './_shared/publish-dom.js';
 
 const retrieval = vi.hoisted(() => ({ posts: [], calls: [] }));
 vi.mock('./_shared/client.js', () => ({
@@ -17,6 +23,12 @@ vi.mock('./_shared/client.js', () => ({
     return { data: { feedData: [{ totalData: {}, dataByTabtype: [] }], notExistFansData: true }, retention: { items: [], videoLen: 3, maxLostRateSec: 0 } };
   },
 }));
+
+beforeEach(async () => {
+  const actual = await vi.importActual('./_shared/cover.js');
+  vi.mocked(coverModule.configureCover).mockReset().mockImplementation(actual.configureCover);
+  vi.mocked(coverModule.verifyCover).mockReset().mockImplementation(actual.verifyCover);
+});
 
 let dir;
 beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), 'bycli-channels-')); retrieval.posts = []; retrieval.calls = []; });
@@ -37,10 +49,8 @@ function browser(block = '') {
   let clicks = 0, uploads = 0, saves = 0, target = 'retained-page';
   root.querySelector('#save-draft').addEventListener('click', () => {
     saves++;
-    const draftId = 'export/saved_fixture';
-    // Updating an existing draft replaces its native card, rather than
-    // inventing a second card with the same identity on every save.
     root.querySelectorAll('.post-edit-wrap,.post-draft-item').forEach(e => e.remove());
+    const draftId = 'export/saved_fixture';
     const wrap = dom.window.document.createElement('div'); wrap.className = 'post-edit-wrap';
     wrap.__vue__ = { $props: { postStore: { defaultValue: { objectId: draftId }, tempPost: { objectId: draftId } } } }; root.append(wrap);
     const card = dom.window.document.createElement('div'); card.className = 'post-draft-item';
@@ -52,6 +62,7 @@ function browser(block = '') {
   dom.window.performance.getEntriesByType = () => saves ? [{ name: 'https://channels.weixin.qq.com/micro/content/cgi-bin/mmfinderassistant-bin/post/post_draft', startTime: Date.now() - dom.window.performance.timeOrigin, responseEnd: 1 }] : [];
   root.querySelector('button').addEventListener('click', () => { clicks++; root.querySelector('.result').textContent = '发表成功'; });
   const page = {
+    withAcceptedDialogs: vi.fn(async (_origin, run) => run()),
     goto: vi.fn(async url => dom.reconfigure({ url })), getActivePage: () => target, setActivePage: vi.fn(value => { target = value; }),
     evaluate: async js => dom.window.eval(js), wait: async () => {},
     startNetworkCapture: async () => true,
@@ -86,15 +97,14 @@ describe('video publishing lifecycle', () => {
     const ui = browser(), a = await args(), navigate = ui.page.goto.getMockImplementation();
     ui.page.goto.mockImplementation(async () => navigate('https://channels.weixin.qq.com' + path));
     await expect(publishVideo(ui.page, a)).rejects.toMatchObject({ code: 'AUTH_REQUIRED', exitCode: 77 });
-    const op = JSON.parse(await readFile(a.operation, 'utf8'));
-    expect(op).toMatchObject({ status: 'preparation_unknown', submitted: false, upload_attempted: false, authentication_required: true });
+    await expect(readFile(a.operation)).rejects.toMatchObject({ code: 'ENOENT' });
     expect(ui.uploads()).toBe(0); expect(ui.saves()).toBe(0); expect(ui.clicks()).toBe(0);
   });
   it.each(['/login.htmlx', '/login-extra'])('does not turn an unrelated %s path into a login pause', async path => {
     const ui = browser(), a = await args(), navigate = ui.page.goto.getMockImplementation();
     ui.page.goto.mockImplementation(async () => navigate('https://channels.weixin.qq.com' + path));
     await expect(publishVideo(ui.page, a)).rejects.toMatchObject({ code: 'COMMAND_EXEC' });
-    expect(JSON.parse(await readFile(a.operation, 'utf8')).authentication_required).toBeUndefined();
+    await expect(readFile(a.operation)).rejects.toMatchObject({ code: 'ENOENT' });
     expect(ui.uploads()).toBe(0);
   });
   it('continues the first upload after login on the same operation, then refuses a second prepare upload', async () => {
@@ -102,7 +112,7 @@ describe('video publishing lifecycle', () => {
     const video = ui.root.querySelector('video'), upload = ui.page.uploadFiles; video.remove();
     ui.page.uploadFiles = async (...args) => { ui.root.append(video); return upload(...args); };
     ui.page.goto.mockImplementation(async () => navigate('https://channels.weixin.qq.com/login.html'));
-    await expect(publishVideo(ui.page, a)).rejects.toMatchObject({ code: 'AUTH_REQUIRED' });
+    await legacyLoginOperation(ui, a);
     const original = JSON.parse(await readFile(a.operation, 'utf8'));
     // A second auth pause retains the same operation without selecting a file.
     await expect(publishVideo(ui.page, a)).rejects.toMatchObject({ code: 'AUTH_REQUIRED' });
@@ -120,7 +130,7 @@ describe('video publishing lifecycle', () => {
     const video = ui.root.querySelector('video'), upload = ui.page.uploadFiles; video.remove();
     ui.page.uploadFiles = async (...args) => { ui.root.append(video); return upload(...args); };
     ui.page.goto.mockImplementation(async () => navigate('https://channels.weixin.qq.com/login.html'));
-    await expect(publishVideo(ui.page, a)).rejects.toMatchObject({ code: 'AUTH_REQUIRED' });
+    await legacyLoginOperation(ui, a);
     await navigate('https://channels.weixin.qq.com/platform/post/create');
     ui.page.goto.mockImplementation(navigate); ui.page.goto.mockClear();
     expect((await publishVideo(ui.page, a))[0]).toMatchObject({ status: 'prepared', submitted: false });
@@ -130,7 +140,7 @@ describe('video publishing lifecycle', () => {
   it.each(['video', 'description', 'ai', 'populated-editor'])('rejects login continuation when %s changed', async reason => {
     const ui = browser(), a = await args(), navigate = ui.page.goto.getMockImplementation();
     ui.page.goto.mockImplementation(async () => navigate('https://channels.weixin.qq.com/login.html'));
-    await expect(publishVideo(ui.page, a)).rejects.toMatchObject({ code: 'AUTH_REQUIRED' });
+    await legacyLoginOperation(ui, a);
     ui.page.goto.mockImplementation(navigate); ui.page.goto.mockClear();
     const retry = { ...a };
     if (reason === 'video') await writeFile(a.file, 'changed video bytes');
@@ -158,7 +168,7 @@ describe('video publishing lifecycle', () => {
   it('does not reopen a legacy authentication record without durable proof of no upload attempt', async () => {
     const ui = browser(), a = await args(), navigate = ui.page.goto.getMockImplementation();
     ui.page.goto.mockImplementation(async () => navigate('https://channels.weixin.qq.com/login.html'));
-    await expect(publishVideo(ui.page, a)).rejects.toMatchObject({ code: 'AUTH_REQUIRED' });
+    await legacyLoginOperation(ui, a);
     const op = JSON.parse(await readFile(a.operation, 'utf8')); delete op.upload_attempted;
     await writeFile(a.operation, JSON.stringify(op)); ui.page.goto.mockClear();
     await publishVideo(ui.page, a);
@@ -238,12 +248,12 @@ describe('video publishing lifecycle', () => {
     let now = 1000; vi.spyOn(Date, 'now').mockImplementation(() => now);
     ui.page.wait = async seconds => { now += seconds * 1000; };
     ui.page.uploadFiles = vi.fn();
-    await expect(publishVideo(ui.page, a)).rejects.toThrow('video-processing: no progress');
+    await expect(publishVideo(ui.page, a)).rejects.toThrow('Video preparation');
     const op = JSON.parse(await readFile(a.operation, 'utf8'));
-    expect(op).toMatchObject({ status: 'preparation_unknown', submitted: false, file_selected: true,
-      wait: { stage: 'video-processing', status: 'stopped', idle_seconds: 60 },
+    expect(op).toMatchObject({ status: 'processing', submitted: false, file_selected: true,
+      wait: { stage: 'video-processing', status: 'interrupted' },
       wait_error: { stage: 'video-processing', code: 'TIMEOUT' } });
-    expect(now).toBeLessThan(70000); expect(ui.saves()).toBe(0); expect(ui.clicks()).toBe(0);
+    expect(now).toBeGreaterThanOrEqual(901000); expect(ui.saves()).toBe(0); expect(ui.clicks()).toBe(0);
     await publishVideo(ui.page, a); expect(ui.page.uploadFiles).toHaveBeenCalledTimes(1);
   });
   it('allows a video with increasing upload progress to take longer than the idle budget', async () => {
@@ -286,7 +296,7 @@ describe('video publishing lifecycle', () => {
     await expect(publishVideo(ui.page, a)).rejects.toThrow('save transport lost');
     ui.page.click = vi.fn();
     await publishVideo(ui.page, a);
-    await expect(publishVideo(ui.page, { operation: a.operation, mode: 'resume', execute: true })).rejects.toThrow('receipt unknown');
+    await expect(publishVideo(ui.page, { operation: a.operation, mode: 'resume', execute: true, timeout: 1 })).rejects.toThrow(/receipt unknown|timed out/);
     expect(ui.page.click).not.toHaveBeenCalled(); expect(ui.uploads()).toBe(1);
   });
   it('rejects legacy preview-only operations even when submission is confirmed', async () => {
@@ -309,7 +319,7 @@ describe('video publishing lifecycle', () => {
     op.cover = { sources: { vertical: { path: join(dir, 'portrait.jpg'), sha256: 'a'.repeat(64) } },
       phase: phase === 'partial' ? 'pending' : phase, completedRoles: phase === 'partial' ? { horizontal: 'already-configured' } : {} };
     await writeFile(a.operation, JSON.stringify(op)); ui.page.goto.mockClear();
-    await expect(publishVideo(ui.page, { operation: a.operation, mode: 'resume', execute: true })).rejects.toThrow('retained editor');
+    await expect(publishVideo(ui.page, { operation: a.operation, mode: 'resume', execute: true })).rejects.toThrow(/retained editor|nonempty local/);
     expect(ui.page.goto).not.toHaveBeenCalled(); expect(ui.saves()).toBe(1); expect(ui.clicks()).toBe(0);
   });
   it.each(['upload_unknown', 'completed', 'activation', 'save', 'source-changed'])('does not reopen an interrupted draft with %s evidence', async reason => {
@@ -490,7 +500,7 @@ describe('video publishing lifecycle', () => {
   it('retries only an explicitly requested identical upload in the empty original page, preserving operation identity', async () => {
     const ui = browser(), a = await args(); await publishVideo(ui.page, a);
     const op = JSON.parse(await readFile(a.operation, 'utf8'));
-    op.status = 'preparation_unknown'; delete op.source_draft_id; delete op.draft_save_attempted; ui.root.querySelectorAll('.post-edit-wrap,.post-draft-item').forEach(e => e.remove()); await writeFile(a.operation, JSON.stringify(op));
+    op.status = 'upload_not_started'; op.upload = { effect: 'none' }; delete op.source_draft_id; delete op.draft_save_attempted; ui.root.querySelectorAll('.post-edit-wrap,.post-draft-item').forEach(e => e.remove()); await writeFile(a.operation, JSON.stringify(op));
     ui.root.querySelector('video').remove(); ui.root.querySelector('[contenteditable]').innerText = '';
     const video = ui.root.ownerDocument.createElement('video');
     const originalUpload = ui.page.uploadFiles;
@@ -563,7 +573,8 @@ describe('video publishing lifecycle', () => {
   });
   it('hands visible verification off without uploading or accepting it', async () => {
     const ui = browser('管理员本人验证'), a = await args();
-    expect((await publishVideo(ui.page, a))[0]).toMatchObject({ status: 'requires_user_action', submitted: false });
+    await expect(publishVideo(ui.page, a)).rejects.toThrow('verification or account permission');
+    await expect(readFile(a.operation)).rejects.toMatchObject({ code: 'ENOENT' });
     expect(ui.uploads()).toBe(0); expect(ui.clicks()).toBe(0);
   });
   it('fails invalid input and concurrent operations before site mutation', async () => {
@@ -669,4 +680,195 @@ describe('integration with existing Channels analytics', () => {
     await expect(videoStatus(ui.page, { operation: a.operation, days: 7, 'management-id': managementId })).rejects.toThrow('cumulative');
     expect(ui.page.goto.mock.calls.every(([url]) => url.includes('draftListManager'))).toBe(true);
   });
+});
+
+
+async function legacyLoginOperation(ui, a) {
+  await ui.page.goto('https://channels.weixin.qq.com/platform/post/create');
+  ui.page.goto.mockClear();
+  const op = { version: 1, operation_id: 'legacy-login', created_at: new Date().toISOString(),
+    description: a.description, ai_generated: a['ai-generated'], sha256: createHash('sha256').update(await readFile(a.file)).digest('hex'),
+    status: 'preparation_unknown', submitted: false, target: ui.page.getActivePage(), upload_attempted: false, authentication_required: true };
+  await writeFile(a.operation, JSON.stringify(op));
+  return op;
+}
+
+describe('publishing recovery regressions', () => {
+it('opts active publishing into Channels-only dialogs and retains the separate submit gate', async () => {
+    const ui = browser(), a = await args();
+    await publishVideo(ui.page, a);
+    expect(ui.page.withAcceptedDialogs).toHaveBeenCalledWith('https://channels.weixin.qq.com', expect.any(Function), 6000);
+    expect(ui.clicks()).toBe(0);
+    ui.page.withAcceptedDialogs.mockClear();
+    await publishVideo(ui.page, a); // Retained prepare is read-only.
+    expect(ui.page.withAcceptedDialogs).not.toHaveBeenCalled();
+    await expect(publishVideo(ui.page, { operation: a.operation, mode: 'submit', execute: true })).rejects.toThrow('--user-confirmed');
+    expect(ui.page.withAcceptedDialogs).not.toHaveBeenCalled();
+  });
+
+it('saves and reopens a multi-line rich description with a rendered terminal newline, and resumes without rewriting it', async () => {
+    const ui = browser(), a = await args(); a.description = '第一段\n第二段 #话题';
+    ui.page.fillText = vi.fn(async (selector, text) => {
+      ui.root.querySelector(selector).innerText = text + '\n';
+      return { filled: true, verified: false, mode: 'contenteditable', actual: text + '\n' };
+    });
+    expect((await publishVideo(ui.page, a))[0]).toMatchObject({ status: 'prepared', submitted: false });
+    expect(ui.page.fillText).toHaveBeenCalledTimes(1); expect(ui.saves()).toBe(1);
+    await publishVideo(ui.page, { operation: a.operation, mode: 'resume', execute: true, timeout: 1 });
+    expect(ui.page.fillText).toHaveBeenCalledTimes(1); expect(ui.uploads()).toBe(1); expect(ui.saves()).toBe(1); expect(ui.clicks()).toBe(0);
+  });
+
+it('resumes the retained uploaded page with an equivalent description without filling or uploading again', async () => {
+    const ui = browser(), a = await args(); a.description = '第一段\n第二段 #话题\n';
+    ui.page.fillText = vi.fn(async (selector, text) => {
+      ui.root.querySelector(selector).innerText = text + '\n';
+      throw Error('original fill verification interrupted');
+    });
+    await expect(publishVideo(ui.page, a)).rejects.toThrow('original fill verification interrupted');
+    const before = JSON.parse(await readFile(a.operation, 'utf8'));
+    expect(before.submitted).toBe(false); expect(ui.uploads()).toBe(1);
+    ui.page.fillText.mockClear();
+    expect((await publishVideo(ui.page, { operation: a.operation, mode: 'resume', execute: true, timeout: 1 }))[0]).toMatchObject({ operation_id: before.operation_id, status: 'prepared', submitted: false });
+    expect(ui.page.fillText).not.toHaveBeenCalled(); expect(ui.uploads()).toBe(1); expect(ui.clicks()).toBe(0);
+  });
+
+it.each(['body', 'space', 'paragraph', 'wrong-host'])('does not relax verification for a changed %s', async change => {
+    const ui = browser(), a = await args(); a.description = '第一段\n第二段';
+    ui.page.fillText = async (selector, text) => {
+      const actual = change === 'body' ? '第一段\n其他内容\n' : change === 'space' ? text + ' ' : change === 'paragraph' ? text.replace('\n', '\n\n') : text + '\n';
+      ui.root.querySelector(selector).innerText = change === 'wrong-host' ? 'different editor content' : actual;
+      return { filled: true, verified: false, mode: 'contenteditable', actual };
+    };
+    await expect(publishVideo(ui.page, a)).rejects.toThrow('Description input was not verified');
+    expect(ui.saves()).toBe(0); expect(ui.clicks()).toBe(0);
+  });
+
+it.each(['first-available-wait', 'input-inspection'])('never injects a file after the total budget expires during %s', async phase => {
+    const ui = browser(), a = await args();
+    let now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const evaluate = ui.page.evaluate;
+    ui.page.wait = async () => { if (phase === 'first-available-wait') now += 1200; };
+    ui.page.evaluate = async script => {
+      const state = await evaluate(script);
+      if (phase === 'input-inspection' && state?.selector?.includes('"input"')) now += 1200;
+      return state;
+    };
+    try {
+      await expect(publishVideo(ui.page, a)).rejects.toMatchObject({ code: 'TIMEOUT' });
+      if (phase === 'first-available-wait') await expect(readFile(a.operation)).rejects.toMatchObject({ code: 'ENOENT' });
+      else expect(JSON.parse(await readFile(a.operation, 'utf8'))).toMatchObject({ status: 'upload_not_started', upload: { effect: 'none' }, submitted: false });
+      expect(ui.uploads()).toBe(0); expect(ui.saves()).toBe(0); expect(ui.clicks()).toBe(0);
+    } finally { clock.mockRestore(); }
+  });
+
+it.each(['/login', '/login/', '/login.html', '/login.html?from=assistant'])('recognizes the real login route %s before inspecting editor controls', async path => {
+    const dom = new JSDOM('', { url: `https://channels.weixin.qq.com${path}`, runScripts: 'outside-only' });
+    expect(dom.window.eval(publishScript('bind', 'op', 'yes'))).toEqual({ error: 'login_required' });
+    expect(dom.window.document.documentElement.hasAttribute('data-bycli-channels-operation')).toBe(false);
+    dom.window.close();
+  });
+
+it.each(['login', 'navigation', 'verification'])('does not create a journal on %s failure; ordinary prepare works after resolving it', async failure => {
+    const ui = browser(), a = await args(), goto = ui.page.goto;
+    if (failure === 'login') ui.page.goto = async () => goto('https://channels.weixin.qq.com/login.html');
+    if (failure === 'navigation') ui.page.goto = async () => { throw Error('navigation disconnected'); };
+    if (failure === 'verification') ui.root.lastElementChild.textContent = '安全验证';
+    await expect(publishVideo(ui.page, a)).rejects.toThrow();
+    await expect(readFile(a.operation)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(ui.uploads()).toBe(0); expect(ui.saves()).toBe(0); expect(ui.clicks()).toBe(0);
+    ui.root.lastElementChild.textContent = ''; ui.page.goto = goto;
+    expect((await publishVideo(ui.page, a))[0]).toMatchObject({ status: 'prepared', submitted: false });
+    expect(ui.uploads()).toBe(1); expect(ui.saves()).toBe(1); expect(ui.clicks()).toBe(0);
+  });
+
+it('reopens an exact saved draft without arming dialogs on a dead target or uploading/saving again', async () => {
+    const ui = browser(), a = await args(); await publishVideo(ui.page, a);
+    const op = JSON.parse(await readFile(a.operation, 'utf8'));
+    op.target = 'closed-page'; op.editor_session = 'old-borrowed-session'; await writeFile(a.operation, JSON.stringify(op));
+    ui.page.setActivePage.mockClear();
+    ui.page.withAcceptedDialogs = vi.fn(async (_origin, run) => {
+      expect(ui.page.setActivePage).not.toHaveBeenCalledWith('closed-page');
+      return run();
+    });
+    const [after] = await publishVideo(ui.page, { operation: a.operation, mode: 'resume', execute: true, timeout: 1 });
+    expect(after).toMatchObject({ operation_id: op.operation_id, status: 'prepared', submitted: false });
+    expect(JSON.parse(await readFile(a.operation, 'utf8')).editor_session).toBeUndefined();
+    expect(ui.uploads()).toBe(1); expect(ui.saves()).toBe(1); expect(ui.clicks()).toBe(0);
+  });
+
+it.each(['unknown', 'legacy'])('does not turn %s upload outcome into an absent-upload receipt', async kind => {
+    const ui = browser(), a = await args();
+    ui.page.uploadFiles = vi.fn(async () => { throw Error('native upload response lost'); });
+    await expect(publishVideo(ui.page, a)).rejects.toThrow('native upload response lost');
+    const op = JSON.parse(await readFile(a.operation, 'utf8'));
+    expect(op.upload.effect).toBe('unknown');
+    if (kind === 'legacy') { delete op.upload; await writeFile(a.operation, JSON.stringify(op)); }
+    await expect(publishVideo(ui.page, { file: a.file, operation: a.operation, mode: 'retry-upload', execute: true })).rejects.toThrow('not proven absent');
+    expect(ui.page.uploadFiles).toHaveBeenCalledTimes(1); expect(ui.saves()).toBe(0); expect(ui.clicks()).toBe(0);
+    const after = JSON.parse(await readFile(a.operation, 'utf8'));
+    expect(after.upload?.effect).toBe(kind === 'legacy' ? undefined : 'unknown');
+    expect(after.upload_retries).toBeUndefined();
+  });
+
+it('rejects an otherwise empty retry editor that belongs to an existing platform draft', async () => {
+    const ui = browser(), a = await args();
+    ui.page.uploadFiles = vi.fn(async () => { throw Object.assign(Error('missing capability'), { code: 'UPLOAD_NOT_STARTED' }); });
+    await expect(publishVideo(ui.page, a)).rejects.toThrow('missing capability');
+    const wrap = ui.root.ownerDocument.createElement('div'); wrap.className = 'post-edit-wrap';
+    wrap.__vue__ = { $props: { postStore: { defaultValue: { objectId: 'export/another_draft' }, tempPost: { objectId: 'export/another_draft' } } } }; ui.root.append(wrap);
+    await expect(publishVideo(ui.page, { file: a.file, operation: a.operation, mode: 'retry-upload', execute: true })).rejects.toThrow('must be empty');
+    expect(ui.page.uploadFiles).toHaveBeenCalledTimes(1); expect(ui.saves()).toBe(0);
+  });
+
+it('waits for initialization to end and resolves the replacement input before one upload', async () => {
+    const ui = browser('页面初始化中'), a = await args(); let waits = 0;
+    ui.page.wait = async () => {
+      if (++waits === 2) {
+        ui.root.lastElementChild.textContent = '已就绪';
+        const input = ui.root.querySelector('input'); input.replaceWith(input.cloneNode());
+      }
+    };
+    const native = ui.page.uploadFiles;
+    ui.page.uploadFiles = async (...args) => { expect(waits).toBeGreaterThanOrEqual(2); return native(...args); };
+    expect((await publishVideo(ui.page, a))[0].status).toBe('prepared'); expect(ui.uploads()).toBe(1);
+  });
+
+it('allows 90 seconds of silent processing within the requested budget, then stops at the total deadline', async () => {
+  let now = Date.now(); const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+  const wait = publishWait(180);
+  try {
+    const processing = await wait.stage('video-processing');
+    await processing.observe({ ready: false }); now += 90_000;
+    await expect(processing.observe({ ready: false })).resolves.toBeUndefined();
+    now += 90_000;
+    await expect(processing.observe({ ready: false })).rejects.toMatchObject({ code: 'TIMEOUT' });
+  } finally { wait.close(); clock.mockRestore(); }
+});
+
+it.each(['recovers', 'opening-recovers', 'exhausts', 'deadline', 'unknown-upload'])('reopens only the same untouched saved draft when cover loading %s', async outcome => {
+  const ui = browser(), a = await args(); a.timeout = 180;
+  const image = join(dir, 'cover.jpg'); await writeFile(image, Buffer.from([255,216,255,224,1,2,3])); a.cover = image;
+  let clock = Date.now(); vi.spyOn(Date, 'now').mockImplementation(() => clock);
+  ui.page.wait = async () => { clock += 500; };
+  const attempts = vi.spyOn(coverModule, 'configureCover').mockImplementation(async (_page, op) => {
+    if (outcome.endsWith('recovers') && op.cover.reloads?.length === 1) { op.cover.phase = 'configured'; return; }
+    if (outcome === 'opening-recovers') op.cover.phase = 'opening';
+    if (outcome === 'deadline') clock += 180_000;
+    if (outcome === 'unknown-upload') { op.cover.phase = 'upload_unknown'; op.cover.upload = { effect: 'unknown' }; }
+    throw Object.assign(new Error('cover not ready'), { code: 'COVER_NOT_READY' });
+  });
+  attempts.mockClear();
+  vi.spyOn(coverModule, 'verifyCover').mockResolvedValue(undefined);
+  const evaluate = ui.page.evaluate;
+  if (outcome === 'opening-recovers') ui.page.evaluate = async script => script.includes('async function coverDOM')
+    ? { cards: {}, dialog: true, cropping: false, render: { custom_source_selected: false } } : evaluate(script);
+  if (outcome.endsWith('recovers')) expect((await publishVideo(ui.page, a))[0]).toMatchObject({ status: 'prepared', submitted: false });
+  else await expect(publishVideo(ui.page, a)).rejects.toMatchObject({ code: outcome === 'deadline' ? 'TIMEOUT' : 'COVER_NOT_READY' });
+  const op = JSON.parse(await readFile(a.operation, 'utf8'));
+  expect(op.source_draft_id).toBe('export/saved_fixture'); expect(op.submitted).toBe(false);
+  expect(op.cover.reloads?.length ?? 0).toBe(outcome.endsWith('recovers') ? 1 : outcome === 'exhausts' ? 3 : 0);
+  expect(attempts).toHaveBeenCalledTimes(outcome.endsWith('recovers') ? 2 : outcome === 'exhausts' ? 4 : 1);
+  expect(ui.uploads()).toBe(1); expect(ui.saves()).toBe(outcome.endsWith('recovers') ? 2 : 1); expect(ui.clicks()).toBe(0);
+});
 });

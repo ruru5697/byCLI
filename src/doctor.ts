@@ -14,6 +14,8 @@ import type { BrowserProfileStatus } from './browser/daemon-client.js';
 import { aliasForContextId, loadProfileConfig } from './browser/profile.js';
 import { formatDaemonVersion, isDaemonStale, staleDaemonIssue } from './browser/daemon-version.js';
 import { findShadowedUserAdapters, formatAdapterShadowIssue, type AdapterShadow } from './adapter-shadow.js';
+import { installedExtensionBuild } from './browser/extension-build.js';
+import { FILE_INPUT_SHADOW_CAPABILITY } from './browser/extension-capabilities.js';
 
 const DOCTOR_LIVE_TIMEOUT_SECONDS = 8;
 const DOCTOR_SESSION = '__doctor__';
@@ -64,9 +66,17 @@ export type DoctorReport = {
   daemonFlaky?: boolean;
   daemonStale?: boolean;
   daemonVersion?: string;
+  daemonPort?: number;
   extensionConnected: boolean;
   extensionFlaky?: boolean;
   extensionVersion?: string;
+  extensionBuildId?: string;
+  expectedExtensionBuildId?: string;
+  extensionBuildVerified?: boolean;
+  installedExtensionVersion?: string;
+  installedExtensionDirectory?: string;
+  extensionCapabilities?: string[];
+  uploadReady?: boolean;
   latestExtensionVersion?: string;
   connectivity?: ConnectivityResult;
   profiles?: BrowserProfileStatus[];
@@ -113,9 +123,25 @@ export async function runBrowserDoctor(opts: DoctorOptions = {}): Promise<Doctor
   const daemonStale = isDaemonStale(health.status, opts.cliVersion);
   const profiles = health.status?.profiles;
   const extensionVersion = health.status?.extensionVersion;
+  const installed = installedExtensionBuild();
+  const extensionBuildId = health.status?.extensionBuildId;
+  const extensionBuildVerified = installed.valid && installed.buildId === extensionBuildId && installed.version === extensionVersion;
+  const extensionCapabilities = health.status?.extensionCapabilities;
+  const uploadReady = extensionConnected && extensionCapabilities?.includes(FILE_INPUT_SHADOW_CAPABILITY) === true;
   const adapterShadows = findShadowedUserAdapters();
 
   const issues: string[] = [];
+  if (extensionConnected && !extensionBuildVerified) {
+    issues.push(!installed.valid
+      ? 'Installed extension build metadata is missing or invalid; rebuild/reinstall the package. Runtime code identity is unverified.'
+      : !extensionBuildId
+        ? `Extension runtime build unverified: the connected extension did not report a build ID; bundled build ${installed.buildId}. Reload the extension or restart the managed browser; daemon restart alone does not reload extension code.`
+        : `Extension runtime build mismatch: running ${extensionBuildId}, installed ${installed.buildId}. Reload the extension or restart the managed browser; daemon restart alone does not reload extension code.`);
+  }
+  if (extensionConnected && !uploadReady) {
+    issues.push(`File upload not ready: ${Array.isArray(extensionCapabilities) ? 'connected extension does not advertise' : 'connected extension capabilities are unreported; cannot verify'} ${FILE_INPUT_SHADOW_CAPABILITY}. `
+      + `Load or reload the bundled extension${installed.version ? ` v${installed.version}` : ''}${installed.directory ? ` from ${installed.directory}` : ''}, then run bycli doctor again. No upload probe was performed.`);
+  }
   if (daemonFlaky) {
     issues.push(
       'Daemon connectivity is unstable. The live browser test succeeded, but the daemon was no longer running immediately afterward.\n' +
@@ -203,9 +229,17 @@ export async function runBrowserDoctor(opts: DoctorOptions = {}): Promise<Doctor
     daemonFlaky,
     daemonStale,
     daemonVersion: health.status?.daemonVersion,
+    daemonPort: health.status?.port,
     extensionConnected,
     extensionFlaky,
     extensionVersion,
+    extensionBuildId,
+    expectedExtensionBuildId: installed.buildId,
+    extensionBuildVerified,
+    installedExtensionVersion: installed.version,
+    installedExtensionDirectory: installed.directory,
+    extensionCapabilities,
+    uploadReady,
     latestExtensionVersion,
     connectivity,
     profiles,
@@ -226,14 +260,14 @@ export function renderBrowserDoctorReport(report: DoctorReport): string {
   const daemonLabel = report.daemonFlaky
     ? 'unstable (running during live check, then stopped)'
     : report.daemonRunning
-      ? `running on port ${DEFAULT_DAEMON_PORT} (${report.daemonStale
+      ? `running on port ${report.daemonPort ?? DEFAULT_DAEMON_PORT} (${report.daemonStale
         ? `${formatDaemonVersion(report)}, stale; CLI v${report.cliVersion ?? 'unknown'}`
         : formatDaemonVersion(report)})`
       : 'not running';
   lines.push(`${daemonIcon} Daemon: ${daemonLabel}`);
 
   // Extension status
-  const extIcon = report.extensionFlaky || (report.extensionConnected && !report.extensionVersion)
+  const extIcon = report.extensionBuildVerified === false || report.extensionFlaky || (report.extensionConnected && !report.extensionVersion)
     ? '[WARN]'
     : report.extensionConnected ? '[OK]' : '[MISSING]';
   const extUpdateHint = report.extensionVersion && report.latestExtensionVersion && isNewerVersion(report.latestExtensionVersion, report.extensionVersion)
@@ -248,6 +282,12 @@ export function renderBrowserDoctorReport(report: DoctorReport): string {
     ? 'unstable (connected during live check, then disconnected)'
     : report.extensionConnected ? 'connected' : 'not connected';
   lines.push(`${extIcon} Extension: ${extLabel}${extVersion}`);
+  if (report.installedExtensionDirectory) {
+    lines.push(`Bundled extension: v${report.installedExtensionVersion ?? 'unknown'} at ${report.installedExtensionDirectory} (not the browser's verified load path)`);
+  }
+  if (report.uploadReady !== undefined) {
+    lines.push(`${report.uploadReady ? '[OK]' : '[WARN]'} File upload: ${report.uploadReady ? 'required capability advertised (platform acceptance not tested)' : 'not ready; required capability missing or unverified'}`);
+  }
 
   if (report.profiles && report.profiles.length > 0) {
     const config = loadProfileConfig();

@@ -87,6 +87,7 @@ type ExtensionProfileConnection = {
   contextId: string;
   ws: WebSocket;
   extensionVersion: string | null;
+  extensionBuildId: string | null;
   extensionCompatRange: string | null;
   extensionCapabilities: string[];
   lastSeenAt: number;
@@ -179,6 +180,7 @@ function registerExtensionConnection(ws: WebSocket, rawContextId: unknown): Exte
     contextId,
     ws,
     extensionVersion: current?.ws === ws ? current.extensionVersion : null,
+    extensionBuildId: current?.ws === ws ? current.extensionBuildId : null,
     extensionCompatRange: current?.ws === ws ? current.extensionCompatRange : null,
     extensionCapabilities: current?.ws === ws ? current.extensionCapabilities : [],
     lastSeenAt: Date.now(),
@@ -534,6 +536,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       contextId: profile.contextId,
       extensionConnected: true,
       extensionVersion: profile.extensionVersion ?? undefined,
+      extensionBuildId: profile.extensionBuildId ?? undefined,
       extensionCompatRange: profile.extensionCompatRange ?? undefined,
       extensionCapabilities: profile.extensionCapabilities,
       pending: [...pending.values()].filter((entry) => entry.contextId === profile.contextId).length,
@@ -546,6 +549,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       daemonVersion: PKG_VERSION,
       extensionConnected: !!route.connection,
       extensionVersion: route.connection?.extensionVersion ?? undefined,
+      extensionBuildId: route.connection?.extensionBuildId ?? undefined,
       extensionCompatRange: route.connection?.extensionCompatRange ?? undefined,
       extensionCapabilities: route.connection?.extensionCapabilities,
       contextId: route.connection?.contextId ?? requestedContextId,
@@ -763,6 +767,7 @@ wss.on('connection', (ws: WebSocket) => {
       if (msg.type === 'hello') {
         const connection = registerExtensionConnection(ws, msg.contextId);
         connection.extensionVersion = typeof msg.version === 'string' ? msg.version : null;
+        connection.extensionBuildId = typeof msg.buildId === 'string' && /^[a-f0-9]{64}$/.test(msg.buildId) ? msg.buildId : null;
         connection.extensionCompatRange = typeof msg.compatRange === 'string' ? msg.compatRange : null;
         connection.extensionCapabilities = normalizeExtensionCapabilities(msg.capabilities);
         connection.lastSeenAt = Date.now();

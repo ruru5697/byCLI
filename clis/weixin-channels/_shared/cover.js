@@ -1,4 +1,4 @@
-import { ArgumentError, CommandExecutionError, TimeoutError } from '@sovovs/bycli/errors';
+import { ArgumentError, CliError, CommandExecutionError, TimeoutError } from '@sovovs/bycli/errors';
 import { readFile, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -193,7 +193,7 @@ export function coverControlScript(action, id, role, thumb, point, attempt = 0) 
 // The user has completed the recorded role manually. Reconcile its exact
 // retained editor without clicking, navigating, reuploading or replacing an ID.
 export async function reconcileConfirmedCover(page, op, role, persist) {
-  if (!op.cover || op.cover.phase !== 'confirm_unknown' || op.cover.role !== role || !coverSources(op.cover)[role]
+  if (!op.cover || !['upload_unknown', 'confirm_unknown'].includes(op.cover.phase) || op.cover.role !== role || !coverSources(op.cover)[role]
     || op.cover.saved || op.cover.save_attempted) throw new CommandExecutionError('Manual cover confirmation does not match the pending role');
   for (const source of Object.values(coverSources(op.cover))) if ((await localCover(source.path)).sha256 !== source.sha256) throw new CommandExecutionError('Recorded cover file changed; refusing recovery');
   const state = await coverState(page, op, 'status', role);
@@ -253,7 +253,7 @@ export async function recoverCoverProcessing(page, op, persist, wait) {
     await page.wait(0.5);
   }
   op.cover.processing_retries ??= {}; op.cover.processing_retries[role] = 1;
-  op.cover.phase = 'pending'; delete op.cover.error; await persist(); return true;
+  op.cover.phase = 'pending'; delete op.cover.upload; delete op.cover.crop_attempted; delete op.cover.error; await persist(); return true;
 }
 export async function coverState(page, op, action = 'status', role = 'horizontal') {
   const state = await page.evaluate(coverScript(action, op.operation_id, role));
@@ -271,7 +271,12 @@ export async function verifyCover(page, op, allowLoading = false) {
   if (state.dialog || state.cropping || !Object.keys(coverSources(op.cover)).every(k => op.cover.identities?.[k]) || !sameCovers(op.cover.identities, state.cards)) throw new CommandExecutionError('Saved custom cover identities changed or are not loaded; refusing publication');
 }
 
-export async function configureCover(page, op, persist, timeout, wait = publishWait(timeout), resumeOpeningRole = null) {
+export function untouchedCover(cover) {
+  return ['pending', 'opening'].includes(cover?.phase) && !cover.upload && !cover.activation && !cover.pending_thumb
+    && !cover.saved && !cover.save_attempted && !Object.keys(cover.completedRoles ?? {}).length;
+}
+
+export async function configureCover(page, op, persist, timeout, wait = publishWait(timeout), retryUploadRole = null, resumeOpeningRole = null) {
   if (!op.cover) return;
   const sources = coverSources(op.cover);
   for (const source of Object.values(sources)) if ((await localCover(source.path)).sha256 !== source.sha256) throw new CommandExecutionError('Recorded cover file changed; refusing upload');
@@ -282,7 +287,7 @@ export async function configureCover(page, op, persist, timeout, wait = publishW
     const state = await coverState(page, op, 'upload', resumeOpeningRole);
     const expected = { ...op.cover.originalIdentities, ...op.cover.completedRoles };
     if (op.cover.phase !== 'opening' || op.cover.role !== resumeOpeningRole || !sources[resumeOpeningRole]
-      || op.cover.saved || op.cover.save_attempted || op.cover.pending_thumb || op.cover.completedRoles?.[resumeOpeningRole]
+      || op.cover.saved || op.cover.save_attempted || op.cover.pending_thumb || op.cover.upload || op.cover.completedRoles?.[resumeOpeningRole]
       || op.cover.activation?.role === resumeOpeningRole || !state.dialog || state.cropping || state.thumb
       || !state.render?.known || state.render.custom_source_selected
       || !['horizontal', 'vertical'].every(role => expected[role] && state.cards[role] === expected[role])) {
@@ -291,24 +296,41 @@ export async function configureCover(page, op, persist, timeout, wait = publishW
     op.cover.recoveries = [...(op.cover.recoveries || []), { at: new Date().toISOString(), from_phase: 'opening', role: resumeOpeningRole, method: 'retained-dialog-before-upload' }];
     await persist();
   }
-  // An interrupted upload/confirmation is retained for inspection, never retried.
-  if (op.cover.phase && op.cover.phase !== 'pending' && !(resumeOpeningRole && op.cover.phase === 'opening')) throw new CommandExecutionError('Custom cover update was interrupted; inspect the retained editor before continuing, do not upload again automatically');
-  const initial = await coverState(page, op);
-  op.cover.originalIdentities ??= initial.cards;
+  op.cover.phase ??= 'pending';
+  if (!['pending', 'opening', 'upload_unknown', 'confirm_unknown'].includes(op.cover.phase)) throw new CommandExecutionError('Cover action outcome is unknown; inspect the retained editor without another click');
   op.cover.completedRoles ??= {};
+  if (op.cover.phase === 'pending' && untouchedCover(op.cover)) {
+    const deadline = Math.min(wait.deadline, Date.now() + 20_000);
+    const stage = await wait.stage('cover-load');
+    let initial;
+    do {
+      initial = await page.evaluate(coverScript('open', op.operation_id, Object.keys(sources)[0]));
+      if (!initial || initial.error && initial.error !== 'cover_editor_loading') throw new CommandExecutionError(`Cover editor unavailable: ${initial?.error || 'invalid response'}`);
+      if (initial.dialog || initial.cropping || initial.thumb) throw new CommandExecutionError('An unrecorded cover dialog is open; retain the editor');
+      await stage.observe({ cards: Object.keys(initial.cards ?? {}).length, edit_control: !!initial.selector });
+      if (initial.cards?.horizontal && initial.cards?.vertical && initial.selector) break;
+      await page.wait(0.5);
+    } while (Date.now() < deadline);
+    wait.assertRemaining();
+    if (!initial.cards?.horizontal || !initial.cards?.vertical || !initial.selector) {
+      throw new CliError('COVER_NOT_READY', 'Cover previews or edit control did not load within 20s', 'Reopen the same saved draft before any cover upload; do not upload the video again');
+    }
+    if (Object.keys(op.cover.originalIdentities ?? {}).length && !sameCovers(op.cover.originalIdentities, initial.cards)) throw new CommandExecutionError('Original cover cards changed before upload');
+    op.cover.originalIdentities = initial.cards;
+  } else op.cover.originalIdentities ??= (await coverState(page, op)).cards;
   for (const role of Object.keys(sources)) {
     if (op.cover.completedRoles[role]) {
-      if ((await coverState(page, op)).cards[role] !== op.cover.completedRoles[role]) throw new CommandExecutionError('Partially configured cover changed; inspect it before recovery');
+      if ((await coverState(page, op)).cards[role] !== op.cover.completedRoles[role]) throw new CommandExecutionError('Partially configured cover changed; inspect the retained editor');
       continue;
     }
+    if (op.cover.phase !== 'pending' && op.cover.role !== role) throw new CommandExecutionError('Interrupted cover role changed; inspect the retained editor');
     try {
-      try { await configureRole(page, op, persist, timeout, role, wait, role === resumeOpeningRole); }
+      try { await configureRole(page, op, persist, timeout, role, wait, retryUploadRole === role); }
       catch (error) {
         if (!await recoverCoverProcessing(page, op, persist, wait)) throw error;
         await configureRole(page, op, persist, timeout, role, wait);
       }
-    }
-    catch (error) {
+    } catch (error) {
       op.cover.error = { role, phase: op.cover.phase, code: error.code || 'COMMAND_EXEC', message: error.message };
       await persist(); throw error;
     }
@@ -319,67 +341,81 @@ export async function configureCover(page, op, persist, timeout, wait = publishW
   op.cover.phase = 'configured'; op.cover.identities = Object.fromEntries(Object.keys(sources).map(k => [k, final.cards[k]])); await persist();
 }
 
-async function configureRole(page, op, persist, timeout, role, wait, retainedOpen = false) {
+async function configureRole(page, op, persist, timeout, role, wait, retryUpload) {
   const deadline = wait.deadline;
-  let stage = await wait.stage(`cover-${role}-open-control`, 30);
-  let state;
-  if (!retainedOpen) {
-    while (Date.now() < deadline) {
-      await page.focusWindow?.(); await page.wait({ time: 1 });
-      await coverState(page, op, 'position', role); await page.wait(0.15);
-      await page.wait({ time: 1 });
+  const before = op.cover.originalIdentities[role];
+  let state, stage;
+  if (['opening', 'upload_unknown'].includes(op.cover.phase)) {
+    const current = await coverState(page, op, 'status', role);
+    if (!['horizontal', 'vertical'].every(k => current.cards[k] && current.cards[k] === (op.cover.completedRoles[k] || op.cover.originalIdentities[k]))) throw new CommandExecutionError('Retained cover cards changed before recovery');
+  }
+  if (op.cover.phase === 'confirm_unknown') {
+    state = await coverState(page, op, 'status', role);
+    if (!state.dialog && !state.cropping && op.cover.pending_thumb && (op.cover.upload?.effect === 'confirmed' || op.cover.activation?.method === 'native-pointer-once' && op.cover.activation?.action === 'confirm' && ['dispatched', 'dispatch_unknown'].includes(op.cover.activation?.status))
+      && state.cards[role] && state.cards[role] !== before) {
+      op.cover.completedRoles[role] = state.cards[role]; op.cover.phase = 'pending'; await persist(); return;
+    }
+    throw new CommandExecutionError('Cover confirmation interrupted; outcome remains unknown; inspect the retained editor without clicking again');
+  }
+  if (op.cover.phase === 'upload_unknown') {
+    if (op.cover.activation?.role === role && op.cover.activation.action === 'confirm' && op.cover.activation.status !== 'not_dispatched') throw new CommandExecutionError('Cover confirmation interrupted; retain the editor without reserving another gesture');
+    state = await coverState(page, op, 'confirm', role);
+    if (op.cover.upload?.effect === 'none' && retryUpload && !op.cover.upload.retry_consumed) {
+      if (state.thumb || state.cropping || state.cards[role] !== before || !state.dialog) throw new CommandExecutionError('Cover retry evidence changed; retain the editor');
+      op.cover.upload.retry_consumed = true; op.cover.phase = 'opening'; await persist();
+    } else if (op.cover.upload?.effect === 'none' || !state.thumb || !state.render?.custom_source_selected) {
+      throw new CommandExecutionError('Cover upload interrupted; outcome is unknown; inspect the retained editor. Retry requires a recorded no-injection error and --retry-cover-upload');
+    }
+  }
+  if (op.cover.phase === 'pending') {
+    stage = await wait.stage(`cover-${role}-open`);
+    const openDeadline = Math.min(deadline, Date.now() + 20_000);
+    while (Date.now() < openDeadline) {
+      await coverState(page, op, 'position', role);
       state = await coverState(page, op, 'open', role);
-      await stage.observe({ control_available: !!state.selector, dialog: state.dialog, cropping: state.cropping });
+      await stage.observe({ dialog: state.dialog, available: !!state.selector });
       if (state.selector) break;
       await page.wait(0.5);
     }
-    if (!state?.selector) throw new TimeoutError('Native cover edit control', timeout);
-    stage = await wait.stage(`cover-${role}-open-response`, 5);
-    op.cover.phase = 'opening'; op.cover.role = role; await persist(); await page.wait(0.15); await clickCoverControl(page, op, 'open', role); await page.wait({ time: 1 });
+    wait.assertRemaining();
+    if (!state?.selector) throw new CliError('COVER_NOT_READY', 'Native cover edit control did not load within 20s');
+    op.cover.phase = 'opening'; op.cover.role = role; await persist(); await clickCoverControl(page, op, 'open', role);
   }
-  state = null;
-  let initializing = false;
-  let nextOpenAt = Date.now() + 3000;
-  while (Date.now() < deadline) {
-    state = await coverState(page, op, 'upload', role);
-    if (state.dialog && !state.selector && !state.cropping && !initializing) {
-      initializing = true; stage = await wait.stage(`cover-${role}-editor-initialization`, 60);
+  if (op.cover.phase === 'opening') {
+    stage = await wait.stage(`cover-${role}-initialization`);
+    let nextOpenAt = Date.now() + 3000;
+    const initializationDeadline = Math.min(deadline, Date.now() + 20_000);
+    while (Date.now() < initializationDeadline) {
+      state = await coverState(page, op, 'upload', role);
+      await stage.observe({ dialog: state.dialog, cropping: state.cropping, available: !!state.selector, render: state.render });
+      if (state.selector) break;
+      if (!state.dialog && !state.cropping && Date.now() >= nextOpenAt) {
+        nextOpenAt = Date.now() + 3000;
+        const open = await coverState(page, op, 'open', role);
+        if (open.selector) await clickCoverControl(page, op, 'open', role);
+      }
+      await page.wait(0.25);
     }
-    await stage.observe({ dialog: state.dialog, cropping: state.cropping, input_available: !!state.selector, render: state.render });
-    if (state.selector) break;
-    // Hover overlays can consume the first pointer click. Reopen only while
-    // there is observably no dialog; file upload/confirmation are never retried.
-    if (!state.dialog && !state.cropping && Date.now() >= nextOpenAt) {
-      nextOpenAt = Date.now() + 3000;
-      await page.focusWindow?.(); await page.wait({ time: 1 });
-      const open = await coverState(page, op, 'open', role);
-      if (open.selector) { await page.wait(0.15); await clickCoverControl(page, op, 'open', role); await page.wait({ time: 1 }); }
+    wait.assertRemaining();
+    if (!state?.selector) throw new CliError('COVER_NOT_READY', 'Native cover file input did not become ready within 20s');
+    const retryConsumed = op.cover.upload?.retry_consumed === true;
+    op.cover.phase = 'upload_unknown'; op.cover.upload = { effect: 'in_flight', retry_consumed: retryConsumed }; await persist();
+    try { await page.uploadFiles(state.selector, [coverSources(op.cover)[role].path]); }
+    catch (error) {
+      op.cover.upload.effect = ['UPLOAD_NOT_STARTED', 'not_file_input', 'stale_ref', 'selector_not_found'].includes(error.code) ? 'none' : 'unknown';
+      op.cover.upload.error_code = error.code ?? 'unknown'; await persist(); throw error;
     }
-    await page.wait(0.25);
   }
-  if (!state?.selector) throw new TimeoutError('Native cover file input', timeout);
-  const before = state.cards[role];
-  stage = await wait.stage(`cover-${role}-upload-preview`, 60);
-  op.cover.phase = 'upload_unknown'; await persist();
-  await page.uploadFiles(state.selector, [coverSources(op.cover)[role].path]);
-  state = null;
-  let cropClicked = false, cropStage;
+  stage = await wait.stage(`cover-${role}-processing`);
+  let cropClicked = false;
   while (Date.now() < deadline) {
     state = await coverState(page, op, 'confirm', role);
-    if (state.cropping) {
-      cropStage ??= await wait.stage(`cover-${role}-crop-control`, 30);
-    } else if (cropStage) {
-      cropStage = null;
-      stage = await wait.stage(`cover-${role}-upload-preview`, 60);
-    }
-    await (cropStage || stage).observe({ cropping: state.cropping, thumbnail_ready: !!state.thumb, preview_ready: state.previewReady, confirm_available: !!state.selector, render: state.render },
-      { cropping: state.cropping, thumb: state.thumb, preview_ready: state.previewReady });
+    await stage.observe({ dialog: state.dialog, cropping: state.cropping, preview_ready: state.previewReady, render: state.render },
+      { thumb: state.thumb, cropping: state.cropping, render: state.render });
     if (state.cropping && !cropClicked) {
+      if (op.cover.crop_attempted) throw new CommandExecutionError('Crop confirmation already attempted; inspect the retained editor');
       const crop = await coverState(page, op, 'crop', role);
-      if (crop.selector) {
-        cropClicked = await clickCoverControl(page, op, 'crop', role, () => wait.assertRemaining(), persist);
-        if (cropClicked) cropStage = await wait.stage(`cover-${role}-crop-response`, 5);
-      }
+      if (crop.selector) { cropClicked = await clickCoverControl(page, op, 'crop', role, async () => { wait.assertRemaining(); op.cover.crop_attempted = true; await persist(); }, persist); }
     }
     // Reinspect after native focus/hover: a crop dialog can appear while those
     // actions settle. Only mark confirmation uncertain when a click is issued.
@@ -387,6 +423,7 @@ async function configureRole(page, op, persist, timeout, role, wait, retainedOpe
       const clicked = await clickCoverControl(page, op, 'confirm', role, async current => {
         wait.assertRemaining();
         op.cover.pending_thumb = current.thumb;
+        op.cover.upload = { ...op.cover.upload, effect: 'confirmed' };
         op.cover.phase = 'confirm_unknown'; await persist();
       }, persist);
       if (clicked && op.cover.completedRoles[role] && op.cover.activation?.status === 'verified') return;
@@ -402,7 +439,7 @@ async function configureRole(page, op, persist, timeout, role, wait, retainedOpe
     if (!state.dialog && !state.cropping && state.cards[role] && state.cards[role] !== before) {
       op.cover.completedRoles[role] = state.cards[role]; op.cover.phase = 'pending';
       if (op.cover.activation?.action === 'confirm') op.cover.activation.status = 'verified';
-      await persist(); return;
+      delete op.cover.crop_attempted; await persist(); return;
     }
     const observation = { role, dialog: state.dialog, cropping: state.cropping, preview_ready: state.previewReady,
       card_updated: !!state.cards[role] && state.cards[role] !== before };

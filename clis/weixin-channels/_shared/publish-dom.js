@@ -15,7 +15,7 @@ export function inspectPublishPage(action, operationId, expectedAi) {
   };
   const visible = el => displayed(el, true);
   if (location.origin !== 'https://channels.weixin.qq.com') return { error: 'wrong_origin' };
-  if (/\/login(?:\.html)?(?:\/|$)/i.test(location.pathname)) return { error: 'login_required' };
+  if (/^\/login(?:\.html)?(?:\/|$)/i.test(location.pathname)) return { error: 'login_required' };
   const inputs = roots.flatMap(r => [...r.querySelectorAll('input[type="file"]')])
     .filter(x => /video/i.test(x.getAttribute('accept') || ''));
   if (location.pathname !== '/platform/post/create') return { error: 'wrong_editor_path', path: location.pathname };
@@ -25,6 +25,8 @@ export function inspectPublishPage(action, operationId, expectedAi) {
   const elements = [...root.querySelectorAll('*')].filter(visible);
   const leaf = text => elements.filter(x => x.children.length === 0 && x.textContent.trim() === text);
   const text = elements.filter(x => x.children.length === 0).map(x => x.textContent.trim()).join('\n');
+  const initializing = roots.some(r => [...r.querySelectorAll('*')].some(e => !e.children.length && visible(e) && /页面初始化中|正在初始化|初始化中/.test(e.textContent)));
+  if (initializing && ['bind', 'input'].includes(action)) return { error: 'editor_loading', initializing: true };
   const blocked = /验证码|安全验证|管理员本人验证|扫码验证|不能发表视频|不是.*管理员|上传失败|处理失败/.test(text)
     || elements.some(x => x.matches('[role="dialog"], .weui-dialog') && /同意|条款|协议/.test(x.textContent));
   const editors = elements.filter(x => x.matches('[contenteditable="true"],[contenteditable=""],[contenteditable="plaintext-only"]'));
@@ -42,6 +44,7 @@ export function inspectPublishPage(action, operationId, expectedAi) {
   const aiSelected = choices.some(x => x.textContent.trim() === expected)
     && !choices.some(x => x.textContent.trim() === '选择视频标注');
   const publishButtons = elements.filter(x => x.matches('button') && x.textContent.trim() === '发表');
+  if (['bind', 'input'].includes(action) && !publishButtons.length) return { error: 'editor_loading' };
   const coverPending = /封面生成中|生成中/.test(text);
   const enabledPublish = publishButtons.filter(x => !x.disabled && x.getAttribute('aria-disabled') !== 'true' && !/disabled/.test(x.className));
   const canSubmit = ready && aiSelected && editors.length === 1 && !coverPending && enabledPublish.length === 1;
@@ -81,13 +84,13 @@ export function inspectPublishPage(action, operationId, expectedAi) {
   if (action === 'bind') document.documentElement.setAttribute('data-bycli-channels-operation', operationId);
   return {
     url: location.href, operation_id: document.documentElement.getAttribute('data-bycli-channels-operation'), draft_id: draftId,
-    blocked, ready, description: editors.length === 1 ? editors[0].innerText || editors[0].textContent : null,
+    blocked, ready, initializing, processing, description: editors.length === 1 ? editors[0].innerText || editors[0].textContent : null,
     ai_selected: aiSelected, selector, success: /发表成功|发布成功|提交成功/.test(text),
     input_files: [...(inputs[0].files || [])].map(f => ({ name: f.name, size: f.size })),
     editors_count: editors.length,
-    videos: videos.map(v => ({ ready_state: v.readyState, duration: Number.isFinite(v.duration) ? v.duration : null })),
+    videos: videos.map(v => ({ has_source: !!(v.currentSrc || v.getAttribute('src')), ready_state: v.readyState, duration: Number.isFinite(v.duration) ? v.duration : null })),
     cover_pending: coverPending,
-    processing, progress_percent: progressValues.length === 1 ? Math.floor(progressValues[0]) : null,
+    progress_percent: progressValues.length === 1 ? Math.floor(progressValues[0]) : null,
     can_submit: canSubmit,
     publish_buttons: publishButtons.map(b => ({ disabled: b.disabled, aria_disabled: b.getAttribute('aria-disabled'), classes: b.className })),
   };

@@ -4,7 +4,8 @@ import { webcrypto, createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { coverScript, coverControlScript, localCover, configureCover, verifyCover, sameCovers, requestedCovers, reconcileConfirmedCover } from './_shared/cover.js';
+import { coverScript, coverControlScript, localCover, configureCover, verifyCover, sameCovers, requestedCovers, reconcileConfirmedCover, recoverCoverProcessing } from './_shared/cover.js';
+import { publishWait } from './_shared/wait.js';
 import { validatePublishArgs } from './_shared/publish.js';
 import { log } from '@sovovs/bycli/logger';
 
@@ -86,7 +87,7 @@ describe('optional video cover configuration', () => {
     expect(() => validatePublishArgs({ ...a, mode: 'resume' })).not.toThrow();
     for (const mode of ['prepare', 'submit', 'recover']) expect(() => validatePublishArgs({ ...a, mode, ...(mode === 'submit' ? { 'user-confirmed': true } : {}) })).toThrow('--retry-cover-processing');
     expect(() => validatePublishArgs({ ...a, mode: 'resume', 'retry-cover-processing': 'other' })).toThrow('--retry-cover-processing');
-    expect(() => validatePublishArgs({ ...a, mode: 'resume', 'cover-confirmed': 'horizontal' })).toThrow('--retry-cover-processing');
+    expect(() => validatePublishArgs({ ...a, mode: 'resume', 'cover-confirmed': 'horizontal' })).toThrow('Select one cover recovery action');
   });
   it('uploads after video initialization even when the default cropper has no image, then waits for custom binding', async () => {
     const ui = browser(), op = { operation_id: 'bound', cover: await source() };
@@ -103,7 +104,7 @@ describe('optional video cover configuration', () => {
     op.cover.originalIdentities = (await ui.win.eval(coverScript('status', 'bound'))).cards;
     op.cover.phase = 'opening'; op.cover.role = 'horizontal'; op.cover.completedRoles = {};
     const open = vi.fn(); ui.root.querySelector('.horizon-img-wrap').onclick = open;
-    await configureCover(ui.page, op, async () => {}, 2, undefined, 'horizontal');
+    await configureCover(ui.page, op, async () => {}, 2, undefined, null, 'horizontal');
     expect(open).not.toHaveBeenCalled(); expect(ui.calls.filter(([name]) => name === 'upload')).toHaveLength(1);
     expect(op.cover.recoveries).toMatchObject([{ method: 'retained-dialog-before-upload' }]);
     await verifyCover(ui.page, op); ui.win.close();
@@ -117,14 +118,14 @@ describe('optional video cover configuration', () => {
     if (reason === 'changed-card') ui.root.querySelector('img.vertical-img-size').src = ui.root.querySelector('img.vertical-img-size').src.replace('idx=1', 'idx=2');
     if (reason === 'wrong-role') op.cover.role = 'vertical';
     if (reason === 'upload_unknown') op.cover.phase = 'upload_unknown';
-    await expect(configureCover(ui.page, op, async () => {}, 2, undefined, 'horizontal')).rejects.toThrow('Opening recovery');
+    await expect(configureCover(ui.page, op, async () => {}, 2, undefined, null, 'horizontal')).rejects.toThrow('Opening recovery');
     expect(ui.calls).toEqual([]); ui.win.close();
   });
   it('rejects an opening continuation flag for submission or mixed recovery', () => {
     const a = { operation: 'op', execute: true, 'resume-cover-opening': 'horizontal' };
     expect(() => validatePublishArgs({ ...a, mode: 'resume' })).not.toThrow();
-    for (const mode of ['prepare', 'submit', 'recover']) expect(() => validatePublishArgs({ ...a, mode, ...(mode === 'submit' ? { 'user-confirmed': true } : {}) })).toThrow('--resume-cover-opening');
-    expect(() => validatePublishArgs({ ...a, mode: 'resume', 'retry-cover-processing': 'horizontal' })).toThrow('--resume-cover-opening');
+    for (const mode of ['prepare', 'submit', 'recover']) expect(() => validatePublishArgs({ ...a, mode, ...(mode === 'submit' ? { 'user-confirmed': true } : {}) })).toThrow(/--resume-cover-opening|Select one cover recovery action/);
+    expect(() => validatePublishArgs({ ...a, mode: 'resume', 'retry-cover-processing': 'horizontal' })).toThrow(/--resume-cover-opening|Select one cover recovery action/);
     expect(() => validatePublishArgs({ ...a, mode: 'resume', 'reopen-saved-draft': true })).not.toThrow();
     expect(() => validatePublishArgs({ operation: 'op', execute: true, mode: 'resume', 'reopen-saved-draft': true })).toThrow('--reopen-saved-draft');
   });
@@ -447,7 +448,7 @@ describe('optional video cover configuration', () => {
     const op = { operation_id: 'bound', cover: await requestedCovers({ cover: horizontal.path, 'vertical-cover': vertical.path }) };
     let now = 1000; vi.spyOn(Date, 'now').mockImplementation(() => now);
     ui.page.wait = async value => { now += (typeof value === 'number' ? value : value.time) * 1000; };
-    await expect(configureCover(ui.page, op, async () => {}, 12)).rejects.toMatchObject({ code: 'TIMEOUT' });
+    await expect(configureCover(ui.page, op, async () => {}, 7)).rejects.toMatchObject({ code: 'TIMEOUT' });
     expect(op.cover.completedRoles.horizontal).toBeTruthy(); expect(op.cover.completedRoles.vertical).toBeUndefined();
     expect(ui.calls.filter(([name]) => name === 'upload')).toHaveLength(1); ui.win.close();
   });
@@ -514,4 +515,112 @@ describe('optional video cover configuration', () => {
     expect(ui.calls.filter(([name]) => name === 'upload')).toEqual([['upload', [horizontal.path]], ['upload', [vertical.path]]]);
     await verifyCover(ui.page, op); ui.win.close();
   });
+it('allows only one explicitly requested retry after a proven pre-injection failure', async () => {
+    const ui = browser(), op = { operation_id: 'bound', cover: await source() };
+    ui.page.uploadFiles = vi.fn(async () => { throw Object.assign(new Error('input disappeared'), { code: 'UPLOAD_NOT_STARTED' }); });
+    await expect(configureCover(ui.page, op, async () => {}, 1)).rejects.toThrow('input disappeared');
+    expect(op.cover.upload.effect).toBe('none');
+    await expect(configureCover(ui.page, op, async () => {}, 1)).rejects.toThrow('Retry requires');
+    expect(ui.page.uploadFiles).toHaveBeenCalledTimes(1);
+    await expect(configureCover(ui.page, op, async () => {}, 1, undefined, 'horizontal')).rejects.toThrow('input disappeared');
+    expect(ui.page.uploadFiles).toHaveBeenCalledTimes(2);
+    await expect(configureCover(ui.page, op, async () => {}, 1, undefined, 'horizontal')).rejects.toThrow('Retry requires');
+    expect(ui.page.uploadFiles).toHaveBeenCalledTimes(2); ui.win.close();
+  });
+it('does not confirm an uploaded thumbnail when the platform has not selected its custom source', async () => {
+    const ui = browser(), op = { operation_id: 'bound', cover: await source() };
+    let clock = Date.now(); vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    ui.page.wait = async () => { clock += 10; };
+    const upload = ui.page.uploadFiles;
+    ui.page.uploadFiles = async (...args) => {
+      await upload(...args);
+      ui.root.querySelector('.weui-desktop-dialog').__vue__.$data.useCustomCover = false;
+    };
+    await expect(configureCover(ui.page, op, async () => {}, 1)).rejects.toThrow('timed out');
+    expect(ui.calls.filter(([name, selector]) => name === 'click' && selector.includes('confirm'))).toHaveLength(0);
+    expect(op.cover.phase).toBe('upload_unknown'); ui.win.close();
+  });
+it('resumes an accepted custom source after a lost upload response without uploading again', async () => {
+    const ui = browser(), op = { operation_id: 'bound', cover: await source() }, upload = ui.page.uploadFiles;
+    ui.page.uploadFiles = async (...args) => { await upload(...args); throw new Error('response lost'); };
+    await expect(configureCover(ui.page, op, async () => {}, 1)).rejects.toThrow('response lost');
+    expect(op.cover.upload.effect).toBe('unknown');
+    ui.page.uploadFiles = vi.fn(); await configureCover(ui.page, op, async () => {}, 1);
+    expect(ui.page.uploadFiles).not.toHaveBeenCalled(); await verifyCover(ui.page, op); ui.win.close();
+  });
+it.each(['upload_unknown', 'confirm_unknown'])('reconciles a manually completed %s cover without another input action', async phase => {
+    const ui = browser(), op = { operation_id: 'bound', cover: await source() };
+    await configureCover(ui.page, op, async () => {}, 1);
+    const calls = ui.calls.length; op.cover.phase = phase; op.cover.role = 'horizontal';
+    delete op.cover.completedRoles.horizontal;
+    await reconcileConfirmedCover(ui.page, op, 'horizontal', async () => {});
+    await configureCover(ui.page, op, async () => {}, 1);
+    expect(ui.calls).toHaveLength(calls); await verifyCover(ui.page, op); ui.win.close();
+  });
+it('recovers one exact native processing failure, never an unproven confirmation', async () => {
+    const ui = browser(), op = { operation_id: 'bound', cover: await source() };
+    let clock = Date.now(); vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    ui.page.wait = async () => { clock += 10; };
+    const click = ui.page.nativeClickOnce;
+    ui.page.nativeClickOnce = async (...args) => { if (ui.root.querySelector('[data-bycli-channels-cover]')?.getAttribute('data-bycli-channels-cover') !== 'confirm') await click(...args); };
+    await expect(configureCover(ui.page, op, async () => {}, 1)).rejects.toThrow('timed out');
+    expect(op.cover.activation.status).toBe('dispatched');
+    ui.page.consoleMessages = async () => [];
+    expect(await recoverCoverProcessing(ui.page, op, async () => {}, publishWait(1))).toBe(false);
+    ui.page.consoleMessages = async () => [{ timestamp: Date.parse(op.cover.activation.at), text: 'imgSizeInvalid width=0 height=0' }];
+    expect(await recoverCoverProcessing(ui.page, op, async () => {}, publishWait(1))).toBe(true);
+    expect(op.cover.processing_retries.horizontal).toBe(1);
+    ui.page.nativeClickOnce = click; await configureCover(ui.page, op, async () => {}, 1);
+    expect(ui.calls.filter(([name]) => name === 'upload')).toHaveLength(2); ui.win.close();
+  });
+it('waits for both initial cards instead of freezing an empty baseline', async () => {
+  const ui = browser(), op = { operation_id: 'bound', cover: await source() };
+  const image = ui.root.querySelector('img.horizon-img-size');
+  Object.defineProperty(image, 'naturalWidth', { value: 0, configurable: true });
+  let clock = Date.now(); vi.spyOn(Date, 'now').mockImplementation(() => clock);
+  ui.page.wait = async () => {
+    clock += 100;
+    Object.defineProperty(image, 'naturalWidth', { value: 1920, configurable: true });
+  };
+  await configureCover(ui.page, op, async () => {}, 10);
+  expect(Object.keys(op.cover.originalIdentities)).toHaveLength(2);
+  expect(ui.calls.filter(([name]) => name === 'upload')).toHaveLength(1);
+  ui.win.close();
+});
+it('reports a reloadable load failure after 20s without uploading or persisting an empty baseline', async () => {
+  const ui = browser(), op = { operation_id: 'bound', cover: await source() };
+  ui.root.querySelectorAll('.edit-btn').forEach(e => e.remove());
+  let clock = Date.now(); vi.spyOn(Date, 'now').mockImplementation(() => clock);
+  ui.page.wait = async () => { clock += 5000; };
+  await expect(configureCover(ui.page, op, async () => {}, 180)).rejects.toMatchObject({ code: 'COVER_NOT_READY' });
+  expect(op.cover.originalIdentities).toBeUndefined();
+  expect(op.cover.phase).toBe('pending');
+  expect(ui.calls).toEqual([]);
+  ui.win.close();
+});
+it('bounds an uninitialized empty cover dialog before injecting a file', async () => {
+  const ui = browser(), op = { operation_id: 'bound', cover: await source() };
+  ui.root.querySelector('.weui-desktop-dialog').__vue__.$data.isVideoInitialized = false;
+  let clock = Date.now(); vi.spyOn(Date, 'now').mockImplementation(() => clock);
+  ui.page.wait = async () => { clock += 1000; };
+  await expect(configureCover(ui.page, op, async () => {}, 180)).rejects.toMatchObject({ code: 'COVER_NOT_READY' });
+  expect(op.cover.phase).toBe('opening'); expect(op.cover.upload).toBeUndefined();
+  expect(ui.calls.filter(([name]) => name === 'upload')).toHaveLength(0);
+  ui.win.close();
+});
+it('finishes both covers from verified platform state even when native injection consumes FileList', async () => {
+  const ui = browser(), horizontal = await source(), vertical = await source('vertical.jpg');
+  const op = { operation_id: 'bound', cover: await requestedCovers({ cover: horizontal.path, 'vertical-cover': vertical.path }) };
+  const upload = ui.page.uploadFiles;
+  ui.page.uploadFiles = async (...args) => {
+    await upload(...args);
+    return { uploaded: true, files: 1, file_names: [], file_list_verified: false };
+  };
+  await configureCover(ui.page, op, async () => {}, 1);
+  expect(op.cover.phase).toBe('configured');
+  expect(Object.keys(op.cover.completedRoles).sort()).toEqual(['horizontal', 'vertical']);
+  expect(ui.calls.filter(([name]) => name === 'upload')).toHaveLength(2);
+  expect(ui.page.nativeClickOnce).toHaveBeenCalledTimes(2);
+  ui.win.close();
+});
 });

@@ -113,7 +113,7 @@ export interface IPage {
   hover?(ref: string, opts?: { nth?: number; firstOnMulti?: boolean }): Promise<{ matches_n: number; match_level: 'exact' | 'stable' | 'reidentified' }>;
   focus?(ref: string, opts?: { nth?: number; firstOnMulti?: boolean }): Promise<{ focused: boolean; matches_n: number; match_level: 'exact' | 'stable' | 'reidentified' }>;
   setChecked?(ref: string, checked: boolean, opts?: { nth?: number; firstOnMulti?: boolean }): Promise<{ checked: boolean; changed: boolean; matches_n: number; match_level: 'exact' | 'stable' | 'reidentified'; kind?: string }>;
-  uploadFiles?(ref: string, files: string[], opts?: { nth?: number; firstOnMulti?: boolean }): Promise<{ uploaded: boolean; files: number; file_names: string[]; target: string; matches_n: number; match_level: 'exact' | 'stable' | 'reidentified'; multiple?: boolean; accept?: string }>;
+  uploadFiles?(ref: string, files: string[], opts?: { nth?: number; firstOnMulti?: boolean }): Promise<{ uploaded: boolean; files: number; file_names: string[]; file_list_verified?: boolean; target: string; matches_n: number; match_level: 'exact' | 'stable' | 'reidentified'; multiple?: boolean; accept?: string }>;
   drag?(source: string, target: string, opts?: { from?: { nth?: number; firstOnMulti?: boolean }; to?: { nth?: number; firstOnMulti?: boolean } }): Promise<{ dragged: boolean; source: string; target: string; source_matches_n: number; target_matches_n: number; source_match_level: 'exact' | 'stable' | 'reidentified'; target_match_level: 'exact' | 'stable' | 'reidentified' }>;
   typeText(ref: string, text: string, opts?: { nth?: number; firstOnMulti?: boolean }): Promise<{ matches_n: number; match_level: 'exact' | 'stable' | 'reidentified' }>;
   fillText(ref: string, text: string, opts?: { nth?: number; firstOnMulti?: boolean }): Promise<{
@@ -180,12 +180,16 @@ export interface IPage {
   cdp?(method: string, params?: Record<string, unknown>): Promise<unknown>;
   /** Accept or dismiss the currently open JavaScript alert/confirm/prompt dialog. */
   handleJavaScriptDialog?(accept: boolean, promptText?: string): Promise<void>;
+  /** Accept ordinary dialogs only on this page and origin for the callback's lifetime. */
+  withAcceptedDialogs?<T>(origin: string, run: () => Promise<T>, timeoutMs?: number): Promise<T>;
   /** List cross-origin iframe targets in snapshot order. */
   frames?(): Promise<Array<{ index: number; frameId: string; url: string; name: string }>>;
   /** Evaluate JavaScript inside a cross-origin iframe identified by its frame index. */
   evaluateInFrame?(js: string, frameIndex: number): Promise<unknown>;
   /** Click at native coordinates via CDP Input.dispatchMouseEvent. */
   nativeClick?(x: number, y: number): Promise<void>;
+  nativeClickOnce?(x: number, y: number): Promise<void>;
+  clickOnce?(ref: string, opts?: { nth?: number; firstOnMulti?: boolean }): Promise<void>;
   /** Type text via CDP Input.insertText. */
   nativeType?(text: string): Promise<void>;
   /** Press a key via CDP Input.dispatchKeyEvent. */

@@ -866,12 +866,26 @@ describe('BasePage native input routing', () => {
     expect((err as TargetError).hint).toContain('Select another radio');
   });
 
+  it('reports native injection separately when the page consumes its FileList', async () => {
+    const page = new ActionPage(); page.setFileInput = vi.fn().mockResolvedValue(undefined);
+    page.results = [resolveOk, []]; page.withArgsResults = [{ ok: true, multiple: false }, undefined];
+    await expect(page.uploadFiles('#file', ['/tmp/video.mp4'])).resolves.toMatchObject({ uploaded: true, files: 1, file_names: [], file_list_verified: false });
+    expect(page.setFileInput).toHaveBeenCalledTimes(1);
+  });
+  it('reports a proven no-injection failure separately from an ambiguous transport result', async () => {
+    for (const [nativeCode, code] of [['upload_not_started', 'UPLOAD_NOT_STARTED'], ['extension_capability_missing', 'UPLOAD_NOT_STARTED'], ['command_result_unknown', 'UPLOAD_RESULT_UNKNOWN']]) {
+      const page = new ActionPage(); page.setFileInput = vi.fn().mockRejectedValue(Object.assign(new Error('failed'), { code: nativeCode }));
+      page.results = [resolveOk]; page.withArgsResults = [{ ok: true, multiple: false }, undefined];
+      await expect(page.uploadFiles('#file', ['/tmp/video.mp4'])).rejects.toMatchObject({ code,
+        ...(nativeCode === 'extension_capability_missing' ? { hint: expect.stringContaining('Run bycli doctor') } : {}),
+      });
+    }
+  });
   it('uploads files through setFileInput using a temporary marker selector', async () => {
     const page = new ActionPage();
     page.setFileInput = vi.fn().mockResolvedValue(undefined);
     page.results = [
       resolveOk,
-      true, // input/change events dispatched after assigning the FileList
       ['receipt.pdf'],
     ];
     page.withArgsResults = [{ ok: true, multiple: false, accept: 'application/pdf' }, undefined];
@@ -880,6 +894,7 @@ describe('BasePage native input routing', () => {
       uploaded: true,
       files: 1,
       file_names: ['receipt.pdf'],
+      file_list_verified: true,
       target: '#file',
       matches_n: 1,
       match_level: 'exact',
@@ -888,15 +903,15 @@ describe('BasePage native input routing', () => {
     });
 
     expect(page.setFileInput).toHaveBeenCalledWith(['/tmp/receipt.pdf'], expect.stringMatching(/data-bycli-upload-target/));
-    expect(page.scripts.some(script => script.includes("new Event('input'"))).toBe(true);
-    expect(page.scripts.some(script => script.includes("new Event('change'"))).toBe(true);
+    expect(page.scripts.some(script => script.includes("new Event('input'"))).toBe(false);
+    expect(page.scripts.some(script => script.includes("new Event('change'"))).toBe(false);
     expect(page.withArgs.at(0)).toMatchObject({ markerAttr: 'data-bycli-upload-target' });
     expect(page.withArgs.at(-1)).toMatchObject({ markerAttr: 'data-bycli-upload-target' });
   });
 
   it.each(['main-document', 'nested-shadow', 'duplicate-reference'])('uploads the unique file input through the direct CDP fallback in %s', async mode => {
     const page = new ActionPage();
-    page.results = [resolveOk, true, ['video.mp4']];
+    page.results = [resolveOk, ['video.mp4']];
     page.withArgsResults = [{ ok: true, multiple: false, accept: 'video/*' }, undefined];
     const queries: number[] = [];
     page.cdp = vi.fn(async (method, params) => {

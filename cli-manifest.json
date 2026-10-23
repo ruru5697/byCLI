@@ -33585,11 +33585,21 @@
         "help": "adopt-draft / recover / retry-upload：已通过 browser <session> bind 明确绑定的浏览器会话"
       },
       {
+        "name": "retry-cover-upload",
+        "type": "str",
+        "required": false,
+        "help": "resume 专用：仅记录证明未注入文件时允许该封面重试一次",
+        "choices": [
+          "horizontal",
+          "vertical"
+        ]
+      },
+      {
         "name": "timeout",
         "type": "int",
         "default": 180,
         "required": false,
-        "help": "整次浏览器操作预算秒数（1–1800）；无进展时提前停止，保留草稿与现场"
+        "help": "整次操作预算秒数（1–1800）；超时保留草稿与当前阶段"
       },
       {
         "name": "user-confirmed",

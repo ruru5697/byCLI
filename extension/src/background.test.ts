@@ -52,6 +52,13 @@ class MockWebSocket {
   }
 }
 
+// Each imported worker must use a test-local successful daemon probe. Real
+// failures schedule reconnects that survive resetModules and leak into later
+// WebSocket assertions when CI has no daemon listening on localhost.
+beforeEach(() => {
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true })));
+});
+
 describe('private ima reader commands', () => {
   beforeEach(() => {
     vi.resetModules();
@@ -1957,6 +1964,18 @@ describe('background tab isolation', () => {
       .filter((message) => typeof message.ok === 'boolean')).toHaveLength(responseCount);
   });
 
+  it('retries a failed startup ping within the bounded reconnect budget', async () => {
+    vi.useFakeTimers();
+    try {
+      const { chrome } = createChromeMock(); vi.stubGlobal('chrome', chrome);
+      const ping = vi.fn().mockRejectedValueOnce(new Error('startup race')).mockResolvedValue({ ok: true });
+      vi.stubGlobal('fetch', ping);
+      await import('./background'); await vi.advanceTimersByTimeAsync(0);
+      expect(ping).toHaveBeenCalledTimes(1); expect(MockWebSocket.instances).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(ping).toHaveBeenCalledTimes(2); expect(MockWebSocket.instances).toHaveLength(1);
+    } finally { vi.clearAllTimers(); vi.useRealTimers(); }
+  });
   it('coalesces concurrent daemon connection attempts while the probe is in flight', async () => {
     const { chrome } = createChromeMock();
     vi.stubGlobal('chrome', chrome);

@@ -40,6 +40,51 @@ vi.mock('ws', () => ({
 
 import { CDPBridge } from './cdp.js';
 
+describe('direct CDP scoped dialogs', () => {
+  it('bounds renderer initialization as well as the initial socket connection', async () => {
+    vi.stubEnv('BYCLI_CDP_ENDPOINT', 'ws://127.0.0.1:9222/devtools/page/1'); vi.useFakeTimers();
+    const bridge = new CDPBridge();
+    vi.spyOn(bridge, 'send').mockImplementation(() => new Promise(() => {}));
+    try {
+      const connected = bridge.connect({ timeout: 1 });
+      const rejected = expect(connected).rejects.toThrow('existing browser dialog');
+      await vi.advanceTimersByTimeAsync(1000); await rejected;
+    } finally { await bridge.close(); vi.useRealTimers(); }
+  });
+  it('accepts ordinary dialogs only during the same-origin scope and releases listeners', async () => {
+    vi.stubEnv('BYCLI_CDP_ENDPOINT', 'ws://127.0.0.1:9222/devtools/page/1');
+    const bridge = new CDPBridge(), send = vi.spyOn(bridge, 'send').mockResolvedValue({});
+    const page = await bridge.connect();
+    const handlers = new Map<string, (params: unknown) => void>();
+    vi.spyOn(bridge, 'on').mockImplementation((name, fn) => { handlers.set(name, fn); });
+    vi.spyOn(bridge, 'off').mockImplementation((name) => { handlers.delete(name); });
+    send.mockClear();
+    await page.withAcceptedDialogs!('https://channels.weixin.qq.com', async () => {
+      for (const type of ['alert', 'confirm', 'beforeunload']) {
+        handlers.get('Page.javascriptDialogOpening')!({ type, url: 'https://channels.weixin.qq.com/platform/post/create' });
+        handlers.get('Page.javascriptDialogOpening')!({ type, url: 'https://channels.weixin.qq.com/platform/post/create' });
+        handlers.get('Page.javascriptDialogClosed')!({});
+      }
+    });
+    expect(send.mock.calls.filter(([method]) => method === 'Page.handleJavaScriptDialog')).toHaveLength(3);
+    expect(handlers.size).toBe(0);
+    bridge.close();
+  });
+  it.each([{ type: 'prompt', url: 'https://channels.weixin.qq.com' }, { type: 'confirm', url: 'https://other.example' }])('never accepts %j and stops subsequent actions', async detail => {
+    vi.stubEnv('BYCLI_CDP_ENDPOINT', 'ws://127.0.0.1:9222/devtools/page/1');
+    const bridge = new CDPBridge(), send = vi.spyOn(bridge, 'send').mockResolvedValue({});
+    const page = await bridge.connect(); let onDialog: ((params: unknown) => void) | undefined;
+    vi.spyOn(bridge, 'on').mockImplementation((name, fn) => { if (name === 'Page.javascriptDialogOpening') onDialog = fn; });
+    send.mockClear();
+    await expect(page.withAcceptedDialogs!('https://channels.weixin.qq.com', async () => {
+      onDialog!(detail);
+      await page.nativeType!('must not type');
+    })).rejects.toThrow('manual input or belongs to another origin');
+    expect(send).toHaveBeenCalledTimes(1); // Page.enable only.
+    bridge.close();
+  });
+});
+
 describe('CDPBridge cookies', () => {
   beforeEach(() => {
     vi.unstubAllEnvs();

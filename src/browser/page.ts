@@ -26,6 +26,8 @@ import { waitForDomStableJs } from './dom-helpers.js';
 import { BasePage } from './base-page.js';
 import { classifyBrowserError } from './errors.js';
 import { log } from '../logger.js';
+import { resolveTargetJs, boundingRectResolvedJs, type ResolveOptions } from './target-resolver.js';
+import { TargetError } from './target-errors.js';
 
 function isUnsupportedNetworkCaptureError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
@@ -68,14 +70,16 @@ export class Page extends BasePage {
 
   /** Active page identity (targetId), set after navigate and used in all subsequent commands */
   private _page: string | undefined;
+  private _dialogToken: string | undefined;
   private _networkCaptureUnsupported = false;
   private _networkCaptureWarned = false;
 
   /** Helper: spread session into command params */
-  private _sessionOpts(): { session: string; surface: 'browser' | 'adapter'; idleTimeout?: number; contextId?: string; windowMode?: 'foreground' | 'background'; siteSession?: 'ephemeral' | 'persistent' } {
+  private _sessionOpts(): { session: string; surface: 'browser' | 'adapter'; idleTimeout?: number; contextId?: string; windowMode?: 'foreground' | 'background'; siteSession?: 'ephemeral' | 'persistent'; dialogToken?: string } {
     return {
       session: this.session,
       surface: this.surface,
+      ...(this._dialogToken && { dialogToken: this._dialogToken }),
       ...(this.contextId && { contextId: this.contextId }),
       ...(this._idleTimeout != null && { idleTimeout: this._idleTimeout }),
       ...(this.windowMode && { windowMode: this.windowMode }),
@@ -88,12 +92,30 @@ export class Page extends BasePage {
     return {
       session: this.session,
       surface: this.surface,
+      ...(this._dialogToken && { dialogToken: this._dialogToken }),
       ...(this.contextId && { contextId: this.contextId }),
       ...(this._page !== undefined && { page: this._page }),
       ...(this._idleTimeout != null && { idleTimeout: this._idleTimeout }),
       ...(this.windowMode && { windowMode: this.windowMode }),
       ...(this.siteSession && { siteSession: this.siteSession }),
     };
+  }
+
+  async withAcceptedDialogs<T>(origin: string, run: () => Promise<T>, timeoutMs = 180000): Promise<T> {
+    if (this._dialogToken) throw new Error('A dialog policy is already active on this page');
+    const token = crypto.randomUUID();
+    try {
+      const started = await sendCommandFull('dialog-policy', {
+        ...this._cmdOpts(), op: 'start', dialogOrigin: origin, dialogToken: token, timeoutMs,
+      });
+      if (started.page) this._page = started.page;
+      this._dialogToken = token;
+      return await run();
+    } finally {
+      try { await sendCommandOnce('dialog-policy', { ...this._sessionOpts(), op: 'stop', dialogToken: token }); }
+      catch { log.warn('Dialog policy cleanup could not be confirmed; it will expire automatically.'); }
+      this._dialogToken = undefined;
+    }
   }
 
   async goto(url: string, options?: { waitUntil?: 'load' | 'none'; settleMs?: number; stealth?: boolean }): Promise<void> {
@@ -110,7 +132,7 @@ export class Page extends BasePage {
       // session lease or open a fresh automation tab. Without this, subsequent
       // navigations in the same Page instance keep re-sending the same dead targetId
       // and cascade into "Page not found:" failures.
-      if (!isStalePageIdentityError(err) || this._page === undefined) throw err;
+      if (!isStalePageIdentityError(err) || this._page === undefined || this._dialogToken) throw err;
       this._page = undefined;
       result = await sendCommandFull('navigate', {
         url,
@@ -207,10 +229,10 @@ export class Page extends BasePage {
     }
   }
 
-  /** Execute an irreversible gesture without page-level or transport retries. */
   async evaluateOnce<T = unknown>(js: string): Promise<T> {
     return await sendCommandOnce('exec', { code: buildEvaluateExpression(js, []), ...this._cmdOpts() }) as T;
   }
+
 
   async getCookies(opts: { domain?: string; url?: string } = {}): Promise<BrowserCookie[]> {
     const result = await sendCommand('cookies', { ...this._sessionOpts(), ...opts });
@@ -545,7 +567,6 @@ export class Page extends BasePage {
     });
   }
 
-  /** A single browser input gesture. Never replay a press after a lost response. */
   async nativeClickOnce(x: number, y: number): Promise<void> {
     if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0) {
       throw new Error('Native click requires finite nonnegative viewport coordinates');
@@ -562,6 +583,22 @@ export class Page extends BasePage {
     try { await dispatch({ type: 'mouseReleased', button: 'left', buttons: 0, clickCount: 1 }); }
     catch (error) { if (!pressError) throw error; }
     if (pressError) throw pressError;
+  }
+
+  async clickOnce(ref: string, opts: ResolveOptions = {}): Promise<void> {
+    const target = await this.evaluate(resolveTargetJs(ref, opts)) as { ok: boolean; code: ConstructorParameters<typeof TargetError>[0]['code']; message: string; hint: string };
+    if (!target.ok) throw new TargetError(target);
+    const rect = await this.evaluate(boundingRectResolvedJs()) as { x: number; y: number; visible: boolean } | null;
+    if (!rect?.visible) throw new Error('Single-execution click requires a visible, connected target');
+    const hit = await this.evaluate(`(() => {
+      const el = window.__resolved;
+      if (!el?.isConnected) return false;
+      let node = document.elementFromPoint(${rect.x}, ${rect.y});
+      for (;;) { const inner = node?.shadowRoot?.elementFromPoint?.(${rect.x}, ${rect.y}); if (!inner || inner === node) break; node = inner; }
+      return !!node && (el === node || el.contains(node));
+    })()`);
+    if (!hit) throw new Error('Single-execution click target is detached or obscured');
+    await this.nativeClickOnce(rect.x, rect.y);
   }
 
   async nativeType(text: string): Promise<void> {

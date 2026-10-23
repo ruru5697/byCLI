@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import { draftReceipt, savedDraftId, savedDraftScript } from './_shared/draft.js';
 
@@ -37,11 +37,11 @@ describe('Channels native platform draft identity', () => {
   it.each([
     ['saved text\n', 'saved text', true],
     ['saved text\n', 'saved text\n\n', true],
-    ['saved text\u00a0\n', 'saved text', true],
+    ['saved text\u00a0\n', 'saved text', false],
     [' saved text\n', 'saved text', false],
     ['saved\ntext\n', 'saved text', false],
     ['changed text\n', 'saved text', false],
-  ])('ignores only trailing rich-text whitespace for %j against %j', (stored, expected, matches) => {
+  ])('ignores only trailing rich-text newlines for %j against %j', (stored, expected, matches) => {
     const dom = new JSDOM('<div class="post-draft-item"><span class="icon-edit"></span></div>',
       { url: 'https://channels.weixin.qq.com/platform/post/draftListManager', runScripts: 'outside-only' });
     dom.window.document.querySelector('.post-draft-item').__vue__ = {
@@ -58,7 +58,23 @@ describe('Channels native platform draft identity', () => {
     card.__vue__ = { $props: { post: { objectId: 'export/exact_draft', desc: { description: 'saved text' } } } };
     expect(dom.window.eval(savedDraftScript('export/exact_draft', 'saved text'))).toMatchObject({ matches: 1, id: 'export/exact_draft' });
     expect(dom.window.eval(savedDraftScript('export/other', 'saved text'))).toMatchObject({ matches: 0 });
+    card.__vue__.$props.post.desc.description = 'saved text\n';
+    expect(dom.window.eval(savedDraftScript('export/exact_draft', 'saved text'))).toMatchObject({ matches: 1 });
+    card.__vue__.$props.post.desc.description = 'saved text ';
+    expect(dom.window.eval(savedDraftScript('export/exact_draft', 'saved text'))).toMatchObject({ error: 'draft_content_changed' });
     expect(dom.window.eval(savedDraftScript('export/exact_draft', 'changed'))).toMatchObject({ error: 'draft_content_changed' });
     dom.window.close();
   });
+});
+
+
+it('normalizes the ISO save timestamp retained by legacy operations before matching receipts', async () => {
+  const page = { evaluate: vi.fn(async () => true), wait: async () => {}, readNetworkCapture: async () => [receipt()] };
+  expect(await savedDraftId(page, new Date(100).toISOString(), 1)).toBe('export/exact_draft');
+  expect(page.evaluate.mock.calls[0][0]).toContain('>= 100');
+});
+it('rejects an invalid retained save timestamp without draining network capture', async () => {
+  const page = { evaluate: vi.fn(), readNetworkCapture: vi.fn() };
+  await expect(savedDraftId(page, 'invalid', 1)).rejects.toThrow('start time is invalid');
+  expect(page.evaluate).not.toHaveBeenCalled(); expect(page.readNetworkCapture).not.toHaveBeenCalled();
 });

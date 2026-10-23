@@ -57,8 +57,8 @@ describe('Channels wait budgets', () => {
   it('bounds a missing draft receipt without draining or replaying the save', async () => {
     const page = { evaluate: vi.fn(async () => false), readNetworkCapture: vi.fn(),
       wait: async seconds => { now += seconds * 1000; } };
-    await expect(savedDraftId(page, now, 900)).rejects.toThrow('draft-save-receipt: no progress');
-    expect(now).toBe(31000); expect(page.readNetworkCapture).not.toHaveBeenCalled();
+    await expect(savedDraftId(page, now, 90)).rejects.toThrow('Platform draft save receipt timed out');
+    expect(now).toBe(91000); expect(page.readNetworkCapture).not.toHaveBeenCalled();
   });
   it('excludes content and source URLs from video diagnostics', () => {
     expect(videoObservation({ description: 'private text', url: 'https://example.com/?token=secret',

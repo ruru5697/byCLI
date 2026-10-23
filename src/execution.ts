@@ -538,7 +538,7 @@ export async function executeCommand(
       const internal = cmd as InternalCliCommand;
       const siteSession = resolveSiteSession(cmd, opts.siteSession);
       assertAdapterSessionLifecycle(siteSession, adapterSession);
-      const session = resolveAdapterBrowserSession(cmd, siteSession, adapterSession);
+      const session = resolveAdapterBrowserSession(cmd, siteSession, adapterSession, kwargs);
       const keepTab = resolveKeepTab(siteSession, opts.keepTab);
       const windowMode = resolveBrowserWindowMode('background', opts.windowMode);
       const executeInBrowser = () => browserSession(BrowserFactory, async (page) => {
@@ -878,8 +878,13 @@ function assertAdapterSessionLifecycle(siteSession: SiteSessionMode, adapterSess
   }
 }
 
-function resolveAdapterBrowserSession(cmd: CliCommand, siteSession: SiteSessionMode, adapterSession?: string): string {
+function resolveAdapterBrowserSession(cmd: CliCommand, siteSession: SiteSessionMode, adapterSession?: string, args: Record<string, unknown> = {}): string {
   if (siteSession === 'persistent') {
+    // Keep the retained Channels editor on its historical lease, including
+    // read-only inspection. Statistics and management queries use other tabs.
+    if (cmd.site === 'weixin-channels' && cmd.name !== 'video-publish' && !(cmd.name === 'video-status' && args['inspect-editor'])) {
+      return `site:${cmd.site}:${adapterSession ?? 'default'}:query:${cmd.name}`;
+    }
     return adapterSession ? `site:${cmd.site}:${adapterSession}` : `site:${cmd.site}`;
   }
   return `site:${cmd.site}:${crypto.randomUUID()}`;

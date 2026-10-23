@@ -3,6 +3,7 @@ import { defineConfig } from 'vitest/config';
 const includeExtendedE2e = process.env.BYCLI_E2E === '1';
 const includeAxChromeE2e = process.env.BYCLI_AX_E2E === '1';
 const includeConsoleE2e = process.env.BYCLI_CONSOLE_E2E === '1';
+const includeUploadE2e = process.env.BYCLI_UPLOAD_E2E === '1';
 
 export default defineConfig({
   test: {
@@ -43,6 +44,7 @@ export default defineConfig({
             'tests/e2e/article-download-pipeline.test.ts',
             'tests/e2e/weixin-history.test.ts',
             ...(includeConsoleE2e ? ['tests/e2e/browser-console-local.test.ts'] : []),
+            ...(includeUploadE2e ? ['tests/e2e/browser-upload-local.test.ts'] : []),
             ...(includeAxChromeE2e ? ['tests/e2e/browser-ax-chrome.test.ts', 'tests/e2e/recorder-real-chrome.test.ts'] : []),
             // Extended browser tests (20+ sites) — opt-in only:
             //   BYCLI_E2E=1 npx vitest run

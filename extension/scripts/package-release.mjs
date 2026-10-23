@@ -1,6 +1,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const extensionDir = path.resolve(__dirname, '..');
@@ -46,7 +47,7 @@ function addLocalAsset(files, ref) {
 }
 
 function collectManifestEntrypoints(manifest) {
-  const files = new Set(['manifest.json']);
+  const files = new Set(['manifest.json', 'dist/build-info.json']);
 
   addLocalAsset(files, manifest.background?.service_worker);
   addLocalAsset(files, manifest.action?.default_popup);
@@ -146,6 +147,14 @@ async function main() {
   const { outDir } = parseArgs(process.argv.slice(2));
   const manifestPath = path.join(extensionDir, 'manifest.json');
   const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+  const info = JSON.parse(await fs.readFile(path.join(extensionDir, 'dist/build-info.json'), 'utf8'));
+  const script = await fs.readFile(path.join(extensionDir, manifest.background.service_worker));
+  const extensionPackage = JSON.parse(await fs.readFile(path.join(extensionDir, 'package.json'), 'utf8'));
+  if (info.version !== manifest.version || manifest.version !== extensionPackage.version
+    || !/^[a-f0-9]{64}$/.test(info.buildId)
+    || info.scriptSha256 !== createHash('sha256').update(script).digest('hex')) {
+    throw new Error('Extension version/build metadata mismatch; rebuild before packaging');
+  }
 
   const requiredEntries = await collectManifestAssets(manifest);
   const missingEntries = await findMissingEntries(extensionDir, requiredEntries);

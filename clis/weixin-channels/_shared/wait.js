@@ -3,7 +3,8 @@ import { log } from '@sovovs/bycli/logger';
 
 // One deadline for the whole browser operation. Stage transitions do not renew
 // it. Only previously unseen business observations count as progress; polling,
-// timestamps and repeating A/B states must not keep a stalled operation alive.
+// timestamps and repeating A/B states are not progress. Processing uses the total
+// deadline; control responses may opt into a shorter no-progress limit.
 export function publishWait(timeout, { onUpdate = async () => {}, heartbeat = false } = {}) {
   const started = Date.now(), deadline = started + timeout * 1000;
   let snapshot, reportedAt = started;
@@ -29,7 +30,7 @@ export function publishWait(timeout, { onUpdate = async () => {}, heartbeat = fa
     async finish() {
       if (snapshot) { snapshot = { ...snapshot, status: 'completed' }; await onUpdate(snapshot); }
     },
-    async stage(name, idleSeconds = 60) {
+    async stage(name, idleSeconds = Infinity) {
       assertRemaining();
       const seen = new Set();
       let progressed = Date.now(), nextReport = progressed;
@@ -39,7 +40,8 @@ export function publishWait(timeout, { onUpdate = async () => {}, heartbeat = fa
         if (!seen.has(signature)) { seen.add(signature); progressed = now; }
         snapshot = { stage: name, status: 'waiting', elapsed_seconds: Math.floor((now - started) / 1000),
           idle_seconds: Math.floor((now - progressed) / 1000), timeout_seconds: timeout,
-          idle_timeout_seconds: idleSeconds, last_progress_at: new Date(progressed).toISOString(), observation };
+          ...(Number.isFinite(idleSeconds) ? { idle_timeout_seconds: idleSeconds } : {}),
+          last_progress_at: new Date(progressed).toISOString(), observation };
         const stalled = now - progressed >= idleSeconds * 1000;
         if (now >= nextReport || stalled) {
           reportedAt = now;
