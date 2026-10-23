@@ -7697,7 +7697,7 @@
     "modulePath": "csdn/stats.js",
     "sourceFile": "csdn/stats.js",
     "navigateBefore": false,
-    "siteSession": "persistent"
+    "siteSession": "ephemeral"
   },
   {
     "site": "ctrip",
@@ -17343,7 +17343,7 @@
     "modulePath": "juejin/stats.js",
     "sourceFile": "juejin/stats.js",
     "navigateBefore": false,
-    "siteSession": "persistent"
+    "siteSession": "ephemeral"
   },
   {
     "site": "ke",
@@ -25825,13 +25825,106 @@
   },
   {
     "site": "sohu",
-    "name": "publish-article",
-    "description": "准备搜狐号文章：填写纯文本正文与摘要，插入文末图片和封面，人工确认后单次提交、回执与状态查询",
+    "name": "editor",
+    "description": "列出、打开或明确放弃并关闭搜狐适配器编辑器；读取当前形态分类",
     "access": "write",
     "domain": "mp.sohu.com",
     "strategy": "cookie",
     "browser": true,
     "args": [
+      {
+        "name": "open",
+        "type": "str",
+        "required": false,
+        "valueRequired": true,
+        "help": "Exact retained editor page ID"
+      },
+      {
+        "name": "close",
+        "type": "str",
+        "required": false,
+        "valueRequired": true,
+        "help": "Exact editor page ID to discard and close"
+      },
+      {
+        "name": "discard",
+        "type": "bool",
+        "default": false,
+        "required": false,
+        "help": ""
+      },
+      {
+        "name": "inspect",
+        "type": "bool",
+        "default": false,
+        "required": false,
+        "help": "Read current category controls and draft/publish control labels without clicking or changing the editor"
+      },
+      {
+        "name": "categories",
+        "type": "bool",
+        "default": false,
+        "required": false,
+        "help": ""
+      },
+      {
+        "name": "primary",
+        "type": "str",
+        "required": false,
+        "valueRequired": true,
+        "help": "Select a primary category and list its secondary options"
+      }
+    ],
+    "columns": [
+      "status",
+      "job_id",
+      "job_status",
+      "remote_draft_id",
+      "page",
+      "content_type",
+      "level",
+      "primary",
+      "label",
+      "discarded",
+      "controls",
+      "actions"
+    ],
+    "type": "js",
+    "modulePath": "sohu/editor.js",
+    "sourceFile": "sohu/editor.js",
+    "navigateBefore": false,
+    "siteSession": "persistent"
+  },
+  {
+    "site": "sohu",
+    "name": "publish-article",
+    "description": "准备搜狐号文章：填写纯文本正文与摘要，插入文末图片和封面，保存并核验草稿，人工确认后单次提交与状态查询",
+    "access": "write",
+    "domain": "mp.sohu.com",
+    "strategy": "cookie",
+    "browser": true,
+    "args": [
+      {
+        "name": "save-draft",
+        "type": "str",
+        "required": false,
+        "valueRequired": true,
+        "help": "Save a prepared job to the remote draft box once"
+      },
+      {
+        "name": "draft-status",
+        "type": "str",
+        "required": false,
+        "valueRequired": true,
+        "help": "Reconcile a draft save without another click"
+      },
+      {
+        "name": "open-draft",
+        "type": "str",
+        "required": false,
+        "valueRequired": true,
+        "help": "Reopen and verify an exact saved draft"
+      },
       {
         "name": "input",
         "type": "str",
@@ -25879,6 +25972,8 @@
     ],
     "columns": [
       "status",
+      "remote_draft_id",
+      "recovery",
       "job_id",
       "content_type",
       "title",
@@ -25899,12 +25994,47 @@
   {
     "site": "sohu",
     "name": "publish-gallery",
-    "description": "准备搜狐号图集：上传图片与封面，填写逐图配文和必填项，人工确认后单次提交、回执与状态查询",
+    "description": "准备搜狐号图集：上传图片与封面，填写逐图配文和必填项，保存并核验草稿，人工确认后单次提交与状态查询",
     "access": "write",
     "domain": "mp.sohu.com",
     "strategy": "cookie",
     "browser": true,
     "args": [
+      {
+        "name": "resume",
+        "type": "str",
+        "required": false,
+        "valueRequired": true,
+        "help": "Resume a retained category-selection checkpoint"
+      },
+      {
+        "name": "category",
+        "type": "str",
+        "required": false,
+        "valueRequired": true,
+        "help": "JSON [primary, secondary] for --resume"
+      },
+      {
+        "name": "save-draft",
+        "type": "str",
+        "required": false,
+        "valueRequired": true,
+        "help": "Save a prepared job to the remote draft box once"
+      },
+      {
+        "name": "draft-status",
+        "type": "str",
+        "required": false,
+        "valueRequired": true,
+        "help": "Reconcile a draft save without another click"
+      },
+      {
+        "name": "open-draft",
+        "type": "str",
+        "required": false,
+        "valueRequired": true,
+        "help": "Reopen and verify an exact saved draft"
+      },
       {
         "name": "input",
         "type": "str",
@@ -25952,6 +26082,8 @@
     ],
     "columns": [
       "status",
+      "remote_draft_id",
+      "recovery",
       "job_id",
       "content_type",
       "title",
@@ -25978,6 +26110,20 @@
     "strategy": "cookie",
     "browser": true,
     "args": [
+      {
+        "name": "resume",
+        "type": "str",
+        "required": false,
+        "valueRequired": true,
+        "help": "Resume a retained category-selection checkpoint"
+      },
+      {
+        "name": "category",
+        "type": "str",
+        "required": false,
+        "valueRequired": true,
+        "help": "JSON [primary, secondary] for --resume"
+      },
       {
         "name": "input",
         "type": "str",
@@ -26024,6 +26170,7 @@
       }
     ],
     "columns": [
+      "recovery",
       "status",
       "job_id",
       "submitted",
@@ -26039,6 +26186,176 @@
     "sourceFile": "sohu/publish-video.js",
     "navigateBefore": false,
     "siteSession": "persistent"
+  },
+  {
+    "site": "sohu",
+    "name": "search",
+    "description": "按关键词搜索当前搜狐号账号的文章、视频或图集，核对所属账号和精确ID",
+    "access": "read",
+    "domain": "mp.sohu.com",
+    "strategy": "cookie",
+    "browser": true,
+    "args": [
+      {
+        "name": "keyword",
+        "type": "str",
+        "required": true,
+        "positional": true,
+        "help": "关键词；账号检索匹配标题，公开检索使用搜狐综合搜索"
+      },
+      {
+        "name": "exact-title",
+        "type": "boolean",
+        "default": false,
+        "required": false,
+        "help": "Explicitly keep only case-insensitive full-title equality"
+      },
+      {
+        "name": "type",
+        "type": "str",
+        "default": "all",
+        "required": false,
+        "help": "",
+        "choices": [
+          "all",
+          "article",
+          "video",
+          "gallery"
+        ]
+      },
+      {
+        "name": "status",
+        "type": "str",
+        "default": "published",
+        "required": false,
+        "help": "",
+        "choices": [
+          "published",
+          "all",
+          "draft"
+        ]
+      },
+      {
+        "name": "account-id",
+        "type": "str",
+        "required": false,
+        "valueRequired": true,
+        "help": "Expected current Sohu account ID"
+      },
+      {
+        "name": "page",
+        "type": "int",
+        "default": 1,
+        "required": false,
+        "help": "Backend page 1–50; 10 records per page"
+      },
+      {
+        "name": "limit",
+        "type": "int",
+        "default": 10,
+        "required": false,
+        "help": "Return 1–10 records from this page"
+      },
+      {
+        "name": "timeout",
+        "type": "int",
+        "default": 180,
+        "required": false,
+        "help": ""
+      }
+    ],
+    "columns": [
+      "collected_at",
+      "scope",
+      "keyword",
+      "exact_title",
+      "account",
+      "type",
+      "status",
+      "page",
+      "page_size",
+      "total",
+      "backend_total",
+      "candidates_on_page",
+      "excluded_nonmatching",
+      "returned",
+      "has_next_page",
+      "remaining_on_page",
+      "has_more",
+      "results",
+      "source",
+      "limitations"
+    ],
+    "type": "js",
+    "modulePath": "sohu/search.js",
+    "sourceFile": "sohu/search.js",
+    "navigateBefore": false,
+    "siteSession": "persistent"
+  },
+  {
+    "site": "sohu",
+    "name": "search-public",
+    "description": "搜索搜狐全站公开候选，保留匹配证据和异常，以真实页面滚动加载结果",
+    "access": "read",
+    "domain": "search.sohu.com",
+    "strategy": "public",
+    "browser": true,
+    "args": [
+      {
+        "name": "keyword",
+        "type": "str",
+        "required": true,
+        "positional": true,
+        "help": "关键词；账号检索匹配标题，公开检索使用搜狐综合搜索"
+      },
+      {
+        "name": "exact-title",
+        "type": "boolean",
+        "default": false,
+        "required": false,
+        "help": "Explicitly keep only case-insensitive full-title equality"
+      },
+      {
+        "name": "limit",
+        "type": "int",
+        "default": 10,
+        "required": false,
+        "help": "Return up to 50 platform candidates using real infinite scroll"
+      },
+      {
+        "name": "timeout",
+        "type": "int",
+        "default": 180,
+        "required": false,
+        "help": ""
+      }
+    ],
+    "columns": [
+      "collected_at",
+      "scope",
+      "keyword",
+      "exact_title",
+      "total",
+      "candidates_loaded",
+      "excluded_nonmatching",
+      "returned",
+      "has_more",
+      "partial",
+      "stop_reason",
+      "excluded_recommendations",
+      "observed_recommendations",
+      "excluded_injected",
+      "skipped_invalid",
+      "warnings",
+      "results",
+      "source",
+      "limitations"
+    ],
+    "type": "js",
+    "modulePath": "sohu/search-public.js",
+    "sourceFile": "sohu/search-public.js",
+    "navigateBefore": false,
+    "siteSession": "ephemeral"
   },
   {
     "site": "sohu",
@@ -31181,7 +31498,11 @@
       "url",
       "path",
       "bytes",
-      "contentType"
+      "contentType",
+      "resolved_image_count",
+      "reported_pic_num",
+      "mixed_video_count",
+      "count_matches_reported"
     ],
     "type": "js",
     "modulePath": "weibo/image-download.js",
