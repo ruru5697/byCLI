@@ -28050,6 +28050,80 @@
   },
   {
     "site": "tiktok",
+    "name": "download",
+    "description": "Download a TikTok video using yt-dlp and ffmpeg",
+    "access": "read",
+    "strategy": "public",
+    "browser": false,
+    "args": [
+      {
+        "name": "url",
+        "type": "str",
+        "required": true,
+        "positional": true,
+        "help": "Video URL (YouTube also accepts a video ID)"
+      },
+      {
+        "name": "output",
+        "type": "str",
+        "default": "./tiktok-downloads",
+        "required": false,
+        "valueRequired": true,
+        "help": "Output directory"
+      },
+      {
+        "name": "quality",
+        "type": "str",
+        "default": "best",
+        "required": false,
+        "valueRequired": true,
+        "help": "Maximum video height, or best available",
+        "choices": [
+          "best",
+          "1080p",
+          "720p",
+          "480p"
+        ]
+      },
+      {
+        "name": "timeout",
+        "type": "str",
+        "default": 600,
+        "required": false,
+        "valueRequired": true,
+        "help": "Total download and postprocessing deadline in seconds (1–3600)"
+      },
+      {
+        "name": "cookies-from-browser",
+        "type": "str",
+        "default": "none",
+        "required": false,
+        "valueRequired": true,
+        "help": "Use local browser cookies when login is required",
+        "choices": [
+          "none",
+          "chrome",
+          "chromium",
+          "firefox",
+          "edge",
+          "brave",
+          "safari"
+        ]
+      }
+    ],
+    "columns": [
+      "id",
+      "url",
+      "status",
+      "path",
+      "bytes"
+    ],
+    "type": "js",
+    "modulePath": "tiktok/download.js",
+    "sourceFile": "tiktok/download.js"
+  },
+  {
+    "site": "tiktok",
     "name": "explore",
     "description": "Get trending TikTok videos from the recommend feed via page-context APIs",
     "access": "read",
@@ -37510,6 +37584,80 @@
     "modulePath": "youtube/comments.js",
     "sourceFile": "youtube/comments.js",
     "navigateBefore": "https://www.youtube.com"
+  },
+  {
+    "site": "youtube",
+    "name": "download",
+    "description": "Download a YouTube video using yt-dlp and ffmpeg",
+    "access": "read",
+    "strategy": "public",
+    "browser": false,
+    "args": [
+      {
+        "name": "url",
+        "type": "str",
+        "required": true,
+        "positional": true,
+        "help": "Video URL (YouTube also accepts a video ID)"
+      },
+      {
+        "name": "output",
+        "type": "str",
+        "default": "./youtube-downloads",
+        "required": false,
+        "valueRequired": true,
+        "help": "Output directory"
+      },
+      {
+        "name": "quality",
+        "type": "str",
+        "default": "best",
+        "required": false,
+        "valueRequired": true,
+        "help": "Maximum video height, or best available",
+        "choices": [
+          "best",
+          "1080p",
+          "720p",
+          "480p"
+        ]
+      },
+      {
+        "name": "timeout",
+        "type": "str",
+        "default": 600,
+        "required": false,
+        "valueRequired": true,
+        "help": "Total download and postprocessing deadline in seconds (1–3600)"
+      },
+      {
+        "name": "cookies-from-browser",
+        "type": "str",
+        "default": "none",
+        "required": false,
+        "valueRequired": true,
+        "help": "Use local browser cookies when login is required",
+        "choices": [
+          "none",
+          "chrome",
+          "chromium",
+          "firefox",
+          "edge",
+          "brave",
+          "safari"
+        ]
+      }
+    ],
+    "columns": [
+      "id",
+      "url",
+      "status",
+      "path",
+      "bytes"
+    ],
+    "type": "js",
+    "modulePath": "youtube/download.js",
+    "sourceFile": "youtube/download.js"
   },
   {
     "site": "youtube",
